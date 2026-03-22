@@ -1,5 +1,7 @@
 export type TransactionType = "income" | "expense";
 
+export type RecurrenceFrequency = "daily" | "weekly" | "monthly" | "yearly";
+
 export type Category =
   | "housing" | "food" | "transport" | "utilities" | "entertainment"
   | "health" | "clothing" | "education" | "savings" | "salary"
@@ -15,6 +17,12 @@ export interface Transaction {
   category: Category;
   description: string;
   date: string; // ISO date string YYYY-MM-DD
+  isRecurring?: boolean;
+  recurrence?: {
+    frequency: RecurrenceFrequency;
+    interval: number;
+    endsOn?: string | null;
+  } | null;
   createdAt: string;
 }
 
