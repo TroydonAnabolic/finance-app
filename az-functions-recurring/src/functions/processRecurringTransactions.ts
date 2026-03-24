@@ -184,7 +184,14 @@ export async function processRecurringTransactions(
       isRecurring: false,
       recurrenceStatus: "occurrence",
       recurrenceGroupId,
-      recurrence: null,
+      // Keep recurrence config for display/editing context on occurrences.
+      recurrence: tx.recurrence
+        ? {
+          frequency: tx.recurrence.frequency,
+          interval: tx.recurrence.interval,
+          endsOn: tx.recurrence.endsOn ?? null,
+        }
+        : null,
       recurrenceSourceId: doc.id,
     };
 
@@ -214,3 +221,4 @@ app.timer('processRecurringTransactions', {
     schedule: '0 */1 * * * *',
     handler: processRecurringTransactions
 });
+

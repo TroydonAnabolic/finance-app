@@ -20,6 +20,8 @@ const CATEGORIES: { value: Category; label: string }[] = [
 ];
 
 const RECURRENCE_OPTIONS: { value: RecurrenceFrequency; label: string }[] = [
+  { value: "minute", label: "Every Minute" },
+  { value: "hour", label: "Every Hour" },
   { value: "daily", label: "Daily" },
   { value: "weekly", label: "Weekly" },
   { value: "monthly", label: "Monthly" },
@@ -134,7 +136,7 @@ export function AddTransactionModal({ open, onClose }: Props) {
             className={`relative h-6 w-11 rounded-full transition-colors ${isRecurring ? "bg-volt" : "bg-obsidian-600"}`}
           >
             <span
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${isRecurring ? "translate-x-5" : "translate-x-0.5"}`}
+              className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${isRecurring ? "translate-x-5" : "translate-x-0"}`}
             />
           </button>
         </div>

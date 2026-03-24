@@ -8,6 +8,8 @@ import { useApp } from "@/context/AppContext";
 import type { Transaction, Category, TransactionType } from "@/types";
 import type { RecurrenceFrequency } from "@/types";
 const RECURRENCE_OPTIONS: { value: RecurrenceFrequency; label: string }[] = [
+  { value: "minute", label: "Every Minute" },
+  { value: "hour", label: "Every Hour" },
   { value: "daily", label: "Daily" },
   { value: "weekly", label: "Weekly" },
   { value: "monthly", label: "Monthly" },
@@ -36,7 +38,7 @@ const EDIT_SCOPE_OPTIONS: { value: RecurringEditScope; label: string }[] = [
 ];
 
 export function EditTransactionModal({ open, onClose, transaction }: Props) {
-  const { people, editTransaction, editTransactionSeries } = useApp();
+  const { people, transactions, editTransaction, editTransactionSeries } = useApp();
   const [type, setType] = useState<TransactionType>("expense");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState<Category>("other");
@@ -52,6 +54,24 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
 
   const canEditSeries = !!transaction?.recurrenceGroupId || transaction?.recurrenceStatus === "template" || transaction?.recurrenceStatus === "occurrence" || !!transaction?.recurrenceSourceId;
 
+  const seriesTemplate = transaction?.recurrenceGroupId
+    ? transactions.find(
+        (t) =>
+          t.recurrenceGroupId === transaction.recurrenceGroupId &&
+          (t.recurrenceStatus === "template" || t.isRecurring || !!t.recurrence)
+      )
+    : null;
+
+  const seriesRecurrence = transaction?.recurrence || seriesTemplate?.recurrence || null;
+
+  const recurrenceRole = transaction?.recurrenceStatus === "template"
+    ? "Template"
+    : transaction?.recurrenceStatus === "occurrence"
+      ? "Occurrence"
+      : transaction?.recurrenceGroupId
+        ? "Grouped"
+        : "One-time";
+
   useEffect(() => {
     if (open && transaction) {
       setType(transaction.type);
@@ -60,11 +80,18 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
       setDescription(transaction.description);
       setDate(transaction.date);
       setPersonId(transaction.personId);
-      const recurring = !!transaction.isRecurring || !!transaction.recurrence;
+      const recurring =
+        !!transaction.isRecurring ||
+        !!transaction.recurrence ||
+        !!transaction.recurrenceGroupId ||
+        transaction.recurrenceStatus === "template" ||
+        transaction.recurrenceStatus === "occurrence" ||
+        !!transaction.recurrenceSourceId;
+      const recurrenceConfig = transaction.recurrence || seriesTemplate?.recurrence || null;
       setIsRecurring(recurring);
-      setRecurrenceFrequency(recurring && transaction.recurrence?.frequency ? transaction.recurrence.frequency : "monthly");
-      setRecurrenceInterval(recurring && transaction.recurrence?.interval ? String(transaction.recurrence.interval) : "1");
-      setRecurrenceEndDate(recurring && transaction.recurrence?.endsOn ? transaction.recurrence.endsOn : "");
+      setRecurrenceFrequency(recurring && recurrenceConfig?.frequency ? recurrenceConfig.frequency : "monthly");
+      setRecurrenceInterval(recurring && recurrenceConfig?.interval ? String(recurrenceConfig.interval) : "1");
+      setRecurrenceEndDate(recurring && recurrenceConfig?.endsOn ? recurrenceConfig.endsOn : "");
     } else if (!open) {
       setIsRecurring(false);
       setRecurrenceFrequency("monthly");
@@ -72,7 +99,7 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
       setRecurrenceEndDate("");
       setEditScope("this");
     }
-  }, [open, transaction]);
+  }, [open, transaction, seriesTemplate]);
 
   const handleSubmit = async () => {
     if (!transaction) return;
@@ -164,6 +191,19 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
             />
           </button>
         </div>
+
+        {transaction?.recurrenceGroupId && (
+          <div className="rounded-lg border border-obsidian-600 p-3 text-xs font-body text-white/70 space-y-1">
+            <p><span className="text-white/40">Series Group:</span> {transaction.recurrenceGroupId}</p>
+            <p><span className="text-white/40">Role:</span> {recurrenceRole}</p>
+            <p>
+              <span className="text-white/40">Series Schedule:</span>{" "}
+              {seriesRecurrence?.frequency
+                ? `${seriesRecurrence.frequency} every ${seriesRecurrence.interval || 1}`
+                : "No schedule metadata found"}
+            </p>
+          </div>
+        )}
 
         {isRecurring && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 rounded-lg border border-obsidian-600 p-3">

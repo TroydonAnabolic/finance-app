@@ -1,6 +1,6 @@
 export type TransactionType = "income" | "expense";
 
-export type RecurrenceFrequency = "daily" | "weekly" | "monthly" | "yearly";
+export type RecurrenceFrequency = "minute" | "hour" | "daily" | "weekly" | "monthly" | "yearly";
 
 export type Category =
   | "housing" | "food" | "transport" | "utilities" | "entertainment"
