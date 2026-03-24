@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import { useApp } from "@/context/AppContext";
 import { AddTransactionModal } from "@/components/modals/AddTransactionModal";
 import { EditTransactionModal } from "@/components/modals/EditTransactionModal";
@@ -14,6 +14,28 @@ import { Plus, Upload, Download, Search, Pencil, Trash2 } from "lucide-react";
 import type { Transaction } from "@/types";
 import toast from "react-hot-toast";
 
+type ColumnId = "date" | "description" | "category" | "person" | "amount" | "recurrence" | "recurrenceGroup";
+
+const COLUMN_CONFIG: { id: ColumnId; label: string }[] = [
+  { id: "date", label: "Date" },
+  { id: "description", label: "Description" },
+  { id: "category", label: "Category" },
+  { id: "person", label: "Person" },
+  { id: "amount", label: "Amount" },
+  { id: "recurrence", label: "Recurrence Status" },
+  { id: "recurrenceGroup", label: "Recurrence Group" },
+];
+
+const DEFAULT_VISIBLE_COLUMNS: Record<ColumnId, boolean> = {
+  date: true,
+  description: true,
+  category: true,
+  person: true,
+  amount: true,
+  recurrence: false,
+  recurrenceGroup: false,
+};
+
 export default function TransactionsPage() {
   const { transactions, people, budgets, activeBudget, removeTransaction } = useApp();
   const [addOpen, setAddOpen] = useState(false);
@@ -22,6 +44,20 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [catFilter, setCatFilter] = useState("all");
+  const [showColumnMenu, setShowColumnMenu] = useState(false);
+  const columnMenuRef = useRef<HTMLDivElement>(null);
+    // Close columns menu on outside click
+    useEffect(() => {
+      if (!showColumnMenu) return;
+      function handleClick(e: MouseEvent) {
+        if (columnMenuRef.current && !columnMenuRef.current.contains(e.target as Node)) {
+          setShowColumnMenu(false);
+        }
+      }
+      document.addEventListener("mousedown", handleClick);
+      return () => document.removeEventListener("mousedown", handleClick);
+    }, [showColumnMenu]);
+  const [visibleColumns, setVisibleColumns] = useState<Record<ColumnId, boolean>>(DEFAULT_VISIBLE_COLUMNS);
 
   const budgetTx = useMemo(() =>
     activeBudget ? transactions.filter((t) => t.budgetId === activeBudget.id) : [],
@@ -45,6 +81,39 @@ export default function TransactionsPage() {
 
   const categories = [...new Set(budgetTx.map((t) => t.category))];
 
+  const toggleColumn = (columnId: ColumnId) => {
+    setVisibleColumns((prev) => ({
+      ...prev,
+      [columnId]: !prev[columnId],
+    }));
+  };
+
+  const recurrenceLabel = (t: Transaction) => {
+    if (t.recurrenceStatus === "occurrence" || !!t.recurrenceSourceId) {
+      return "Recurring occurrence";
+    }
+    const isTemplate = t.recurrenceStatus === "template" || !!t.isRecurring || !!t.recurrence;
+    if (isTemplate && t.recurrence?.frequency) {
+      return `Template: ${t.recurrence.frequency} (${t.recurrence.interval || 1}x)`;
+    }
+    if (isTemplate) {
+      return "Recurring template";
+    }
+    if (t.recurrenceStatus === "one_time") return "One-time";
+    if (!t.recurrence && !t.isRecurring) return "One-time";
+    if (t.recurrence?.frequency) {
+      return `${t.recurrence.frequency} (${t.recurrence.interval || 1}x)`;
+    }
+    return "One-time";
+  };
+
+  const recurrenceGroupLabel = (t: Transaction) => {
+    const groupId = t.recurrenceGroupId || null;
+    if (!groupId) return "-";
+    if (groupId.length <= 12) return groupId;
+    return `${groupId.slice(0, 8)}...${groupId.slice(-4)}`;
+  };
+
   return (
     <div className="p-6 lg:p-8 flex flex-col gap-6">
       {/* Header */}
@@ -54,6 +123,29 @@ export default function TransactionsPage() {
           <p className="text-white/40 font-body text-sm mt-0.5">{filtered.length} records</p>
         </div>
         <div className="flex gap-2 flex-wrap">
+          <div className="relative" ref={columnMenuRef}>
+            <Button variant="secondary" size="sm" onClick={() => setShowColumnMenu((prev) => !prev)}>
+              Columns
+            </Button>
+            {showColumnMenu && (
+              <div className="absolute right-0 mt-2 w-52 rounded-lg border border-obsidian-600 bg-obsidian-900 p-3 z-20 shadow-lg">
+                <p className="text-xs font-display font-semibold text-white/50 uppercase tracking-wider mb-2">Show columns</p>
+                <div className="flex flex-col gap-2">
+                  {COLUMN_CONFIG.map((column) => (
+                    <label key={column.id} className="flex items-center gap-2 text-sm text-white/80 font-body cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns[column.id]}
+                        onChange={() => toggleColumn(column.id)}
+                        className="accent-lime-400"
+                      />
+                      <span>{column.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           <Button variant="secondary" size="sm" onClick={() => setImportOpen(true)}>
             <Upload size={13} /> Import CSV
           </Button>
@@ -101,9 +193,14 @@ export default function TransactionsPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-obsidian-600/50">
-                  {["Date", "Description", "Category", "Person", "Amount", ""].map((h) => (
-                    <th key={h} className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">{h}</th>
-                  ))}
+                  {visibleColumns.date && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Date</th>}
+                  {visibleColumns.description && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Description</th>}
+                  {visibleColumns.category && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Category</th>}
+                  {visibleColumns.person && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Person</th>}
+                  {visibleColumns.amount && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Amount</th>}
+                  {visibleColumns.recurrence && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Recurrence</th>}
+                  {visibleColumns.recurrenceGroup && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Recurrence Group</th>}
+                  <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider" />
                 </tr>
               </thead>
               <tbody>
@@ -111,23 +208,39 @@ export default function TransactionsPage() {
                   const person = personMap[t.personId];
                   return (
                     <tr key={t.id} className="border-b border-obsidian-700/50 last:border-0 hover:bg-obsidian-700/30 transition-colors group">
-                      <td className="px-4 py-3 text-xs font-mono text-white/40 whitespace-nowrap">{formatDate(t.date)}</td>
-                      <td className="px-4 py-3 text-sm font-body text-white max-w-[200px] truncate">{t.description || "—"}</td>
-                      <td className="px-4 py-3">
-                        <Badge label={t.category} color={CATEGORY_COLORS[t.category]} />
-                      </td>
-                      <td className="px-4 py-3">
-                        {person && (
-                          <div className="flex items-center gap-1.5">
-                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: person.color }} />
-                            <span className="text-xs font-body text-white/60">{person.name}</span>
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-sm font-mono font-semibold whitespace-nowrap"
-                        style={{ color: t.type === "income" ? "#c8ff00" : "#ff6b6b" }}>
-                        {t.type === "income" ? "+" : "-"}{formatCurrency(t.amount)}
-                      </td>
+                      {visibleColumns.date && <td className="px-4 py-3 text-xs font-mono text-white/40 whitespace-nowrap">{formatDate(t.date)}</td>}
+                      {visibleColumns.description && <td className="px-4 py-3 text-sm font-body text-white max-w-[200px] truncate">{t.description || "—"}</td>}
+                      {visibleColumns.category && (
+                        <td className="px-4 py-3">
+                          <Badge label={t.category} color={CATEGORY_COLORS[t.category]} />
+                        </td>
+                      )}
+                      {visibleColumns.person && (
+                        <td className="px-4 py-3">
+                          {person && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full" style={{ backgroundColor: person.color }} />
+                              <span className="text-xs font-body text-white/60">{person.name}</span>
+                            </div>
+                          )}
+                        </td>
+                      )}
+                      {visibleColumns.amount && (
+                        <td className="px-4 py-3 text-sm font-mono font-semibold whitespace-nowrap"
+                          style={{ color: t.type === "income" ? "#c8ff00" : "#ff6b6b" }}>
+                          {t.type === "income" ? "+" : "-"}{formatCurrency(t.amount)}
+                        </td>
+                      )}
+                      {visibleColumns.recurrence && (
+                        <td className="px-4 py-3 text-xs font-body text-white/60 whitespace-nowrap">
+                          {recurrenceLabel(t)}
+                        </td>
+                      )}
+                      {visibleColumns.recurrenceGroup && (
+                        <td className="px-4 py-3 text-xs font-mono text-white/50 whitespace-nowrap" title={t.recurrenceGroupId || ""}>
+                          {recurrenceGroupLabel(t)}
+                        </td>
+                      )}
                       <td className="px-4 py-3">
                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button onClick={() => setEditTx(t)}

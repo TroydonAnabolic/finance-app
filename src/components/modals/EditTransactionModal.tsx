@@ -27,8 +27,16 @@ const CATEGORIES: { value: Category; label: string }[] = [
 
 interface Props { open: boolean; onClose: () => void; transaction: Transaction | null; }
 
+type RecurringEditScope = "this" | "this_and_future" | "all";
+
+const EDIT_SCOPE_OPTIONS: { value: RecurringEditScope; label: string }[] = [
+  { value: "this", label: "Edit this transaction only" },
+  { value: "this_and_future", label: "Edit this and future transactions" },
+  { value: "all", label: "Edit all transactions in series" },
+];
+
 export function EditTransactionModal({ open, onClose, transaction }: Props) {
-  const { people, editTransaction } = useApp();
+  const { people, editTransaction, editTransactionSeries } = useApp();
   const [type, setType] = useState<TransactionType>("expense");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState<Category>("other");
@@ -39,33 +47,44 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
   const [recurrenceFrequency, setRecurrenceFrequency] = useState<RecurrenceFrequency>("monthly");
   const [recurrenceInterval, setRecurrenceInterval] = useState("1");
   const [recurrenceEndDate, setRecurrenceEndDate] = useState("");
+  const [editScope, setEditScope] = useState<RecurringEditScope>("this");
   const [loading, setLoading] = useState(false);
 
+  const canEditSeries = !!transaction?.recurrenceGroupId || transaction?.recurrenceStatus === "template" || transaction?.recurrenceStatus === "occurrence" || !!transaction?.recurrenceSourceId;
+
   useEffect(() => {
-    if (transaction) {
+    if (open && transaction) {
       setType(transaction.type);
       setAmount(String(transaction.amount));
       setCategory(transaction.category);
       setDescription(transaction.description);
       setDate(transaction.date);
       setPersonId(transaction.personId);
-      setIsRecurring(!!transaction.isRecurring);
-      setRecurrenceFrequency(transaction.recurrence?.frequency || "monthly");
-      setRecurrenceInterval(transaction.recurrence?.interval ? String(transaction.recurrence.interval) : "1");
-      setRecurrenceEndDate(transaction.recurrence?.endsOn || "");
+      const recurring = !!transaction.isRecurring || !!transaction.recurrence;
+      setIsRecurring(recurring);
+      setRecurrenceFrequency(recurring && transaction.recurrence?.frequency ? transaction.recurrence.frequency : "monthly");
+      setRecurrenceInterval(recurring && transaction.recurrence?.interval ? String(transaction.recurrence.interval) : "1");
+      setRecurrenceEndDate(recurring && transaction.recurrence?.endsOn ? transaction.recurrence.endsOn : "");
+    } else if (!open) {
+      setIsRecurring(false);
+      setRecurrenceFrequency("monthly");
+      setRecurrenceInterval("1");
+      setRecurrenceEndDate("");
+      setEditScope("this");
     }
-  }, [transaction]);
+  }, [open, transaction]);
 
   const handleSubmit = async () => {
     if (!transaction) return;
     const parsedInterval = parseInt(recurrenceInterval, 10);
+    const recurrenceGroupId = isRecurring ? (transaction.recurrenceGroupId || crypto.randomUUID()) : null;
     if (isRecurring && (!parsedInterval || parsedInterval < 1)) {
       toast.error("Recurrence interval must be at least 1");
       return;
     }
     setLoading(true);
     try {
-      await editTransaction(transaction.id, {
+      const updatePayload: Partial<Transaction> = {
         type,
         amount: parseFloat(amount),
         category,
@@ -73,6 +92,9 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
         date,
         personId,
         isRecurring,
+        recurrenceStatus: isRecurring ? "template" : "one_time",
+        recurrenceGroupId,
+        recurrenceSourceId: null,
         recurrence: isRecurring
           ? {
               frequency: recurrenceFrequency,
@@ -80,7 +102,14 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
               endsOn: recurrenceEndDate || null,
             }
           : null,
-      });
+      };
+
+      if (canEditSeries && editScope !== "this") {
+        await editTransactionSeries(transaction, editScope, updatePayload);
+      } else {
+        await editTransaction(transaction.id, updatePayload);
+      }
+
       toast.success("Transaction updated");
       onClose();
     } catch {
@@ -110,6 +139,14 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
           options={[{ value: "", label: "Select person..." }, ...budgetPeople.map((p) => ({ value: p.id, label: p.name }))]} />
         <Input label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
         <Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        {canEditSeries && (
+          <Select
+            label="Apply changes to"
+            value={editScope}
+            onChange={(e) => setEditScope(e.target.value as RecurringEditScope)}
+            options={EDIT_SCOPE_OPTIONS}
+          />
+        )}
         <div className="rounded-lg border border-obsidian-600 p-3 flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-display font-semibold text-white">Recurring</p>
@@ -123,7 +160,7 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
             className={`relative h-6 w-11 rounded-full transition-colors ${isRecurring ? "bg-volt" : "bg-obsidian-600"}`}
           >
             <span
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${isRecurring ? "translate-x-5" : "translate-x-0.5"}`}
+              className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${isRecurring ? "translate-x-5" : "translate-x-0"}`}
             />
           </button>
         </div>

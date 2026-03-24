@@ -23,6 +23,9 @@ export interface Transaction {
     interval: number;
     endsOn?: string | null;
   } | null;
+  recurrenceStatus?: "one_time" | "template" | "occurrence";
+  recurrenceGroupId?: string | null;
+  recurrenceSourceId?: string | null;
   createdAt: string;
 }
 

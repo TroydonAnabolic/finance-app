@@ -49,6 +49,7 @@ export function AddTransactionModal({ open, onClose }: Props) {
     if (!amount || isNaN(parseFloat(amount))) return toast.error("Enter a valid amount");
     if (!personId) return toast.error("Select a person");
     const parsedInterval = parseInt(recurrenceInterval, 10);
+    const recurrenceGroupId = isRecurring ? crypto.randomUUID() : null;
     if (isRecurring && (!parsedInterval || parsedInterval < 1)) {
       return toast.error("Recurrence interval must be at least 1");
     }
@@ -63,6 +64,9 @@ export function AddTransactionModal({ open, onClose }: Props) {
         description,
         date,
         isRecurring,
+        recurrenceStatus: isRecurring ? "template" : "one_time",
+        recurrenceGroupId,
+        recurrenceSourceId: null,
         recurrence: isRecurring
           ? {
             frequency: recurrenceFrequency,

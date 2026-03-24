@@ -9,6 +9,8 @@ import {
 } from "@/lib/firestore";
 import type { Budget, Person, Transaction } from "@/types";
 
+type RecurringEditScope = "this" | "this_and_future" | "all";
+
 interface AppContextType {
   budgets: Budget[];
   people: Person[];
@@ -22,6 +24,7 @@ interface AppContextType {
   addTransaction: (data: Omit<Transaction, "id" | "userId" | "createdAt">) => Promise<string>;
   editPerson: (id: string, data: Partial<Person>) => Promise<void>;
   editTransaction: (id: string, data: Partial<Transaction>) => Promise<void>;
+  editTransactionSeries: (target: Transaction, scope: RecurringEditScope, data: Partial<Transaction>) => Promise<void>;
   removePerson: (id: string) => Promise<void>;
   removeTransaction: (id: string) => Promise<void>;
   editBudget: (id: string, data: Partial<Budget>) => Promise<void>;
@@ -71,6 +74,49 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const editPerson = async (id: string, data: Partial<Person>) => { await updatePerson(id, data); await refresh(); };
   const editTransaction = async (id: string, data: Partial<Transaction>) => { await updateTransaction(id, data); await refresh(); };
+  const editTransactionSeries = async (target: Transaction, scope: RecurringEditScope, data: Partial<Transaction>) => {
+    if (scope === "this" || !target.recurrenceGroupId) {
+      await updateTransaction(target.id, data);
+      await refresh();
+      return;
+    }
+
+    const groupTransactions = transactions.filter((t) => t.recurrenceGroupId === target.recurrenceGroupId);
+    const anchorTime = new Date(target.date).getTime();
+
+    const targets = groupTransactions.filter((t) => {
+      const isTemplate = t.recurrenceStatus === "template" || !!t.isRecurring;
+      if (scope === "all") return true;
+      if (isTemplate) return true;
+      const txTime = new Date(t.date).getTime();
+      if (Number.isNaN(anchorTime) || Number.isNaN(txTime)) return t.id === target.id;
+      return txTime >= anchorTime;
+    });
+
+    const seriesData = { ...data };
+    delete seriesData.date;
+
+    await Promise.all(targets.map(async (tx) => {
+      const isTemplate = tx.recurrenceStatus === "template" || !!tx.isRecurring;
+      const updateData: Partial<Transaction> = { ...seriesData };
+
+      if (isTemplate) {
+        updateData.isRecurring = true;
+        updateData.recurrenceStatus = "template";
+        updateData.recurrenceSourceId = null;
+        updateData.recurrenceGroupId = tx.recurrenceGroupId || target.recurrenceGroupId || target.id;
+      } else {
+        delete updateData.isRecurring;
+        delete updateData.recurrence;
+        delete updateData.recurrenceStatus;
+        delete updateData.recurrenceSourceId;
+      }
+
+      await updateTransaction(tx.id, updateData);
+    }));
+
+    await refresh();
+  };
   const removePerson = async (id: string) => { await deletePerson(id); await refresh(); };
   const removeTransaction = async (id: string) => { await deleteTransaction(id); await refresh(); };
   const editBudget = async (id: string, data: Partial<Budget>) => { await updateBudget(id, data); await refresh(); };
@@ -79,7 +125,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   return (
     <AppContext.Provider value={{
       budgets, people, transactions, activeBudget, setActiveBudget, loading, refresh,
-      addBudget, addPerson, addTransaction, editPerson, editTransaction,
+      addBudget, addPerson, addTransaction, editPerson, editTransaction, editTransactionSeries,
       removePerson, removeTransaction, editBudget, removeBudget,
     }}>
       {children}

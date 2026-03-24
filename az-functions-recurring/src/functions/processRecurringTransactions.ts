@@ -23,6 +23,9 @@ type TxDoc = {
   date: string;
   description?: string;
   isRecurring?: boolean;
+  recurrenceStatus?: "one_time" | "template" | "occurrence";
+  recurrenceGroupId?: string | null;
+  recurrenceSourceId?: string | null;
   recurrence?: Recurrence | null;
   type: "income" | "expense";
   budgetId: string;
@@ -170,6 +173,7 @@ export async function processRecurringTransactions(
     }
 
     const nextDateValue = toStoredDateValue(nextDate, frequency);
+    const recurrenceGroupId = tx.recurrenceGroupId || doc.id;
 
     // Generated transaction should be a normal transaction (not another template)
     // to avoid exponential growth of recurring documents.
@@ -178,6 +182,8 @@ export async function processRecurringTransactions(
       date: nextDateValue,
       createdAt: new Date().toISOString(),
       isRecurring: false,
+      recurrenceStatus: "occurrence",
+      recurrenceGroupId,
       recurrence: null,
       recurrenceSourceId: doc.id,
     };
@@ -190,7 +196,11 @@ export async function processRecurringTransactions(
     }
 
     try {
-      await doc.ref.update({date: nextDateValue});
+      await doc.ref.update({
+        date: nextDateValue,
+        recurrenceStatus: "template",
+        recurrenceGroupId,
+      });
       context.log(`[Recurring] Generated and advanced template ${doc.id} to ${nextDateValue}.`);
     } catch (err) {
       context.error(`[Recurring] Generated tx but failed to update ${doc.id}: ${String(err)}`);
