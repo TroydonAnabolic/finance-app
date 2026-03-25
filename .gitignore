@@ -48,3 +48,6 @@ local.settings.json
 /az-functions-recurring/node_modules
 order-app-96b85-firebase-adminsdk-fbsvc-911617c49d.json
 spend-tracker-4d65f-firebase-adminsdk-fbsvc-65d5881572.json
+
+# Debugging
+/debug
