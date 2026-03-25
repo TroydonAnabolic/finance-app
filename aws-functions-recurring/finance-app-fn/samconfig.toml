@@ -4,6 +4,7 @@ version = 0.1
 
 [default.global.parameters]
 stack_name = "finance-app-fn"
+region = "ap-southeast-2"
 
 [default.build.parameters]
 cached = true
@@ -16,6 +17,11 @@ lint = true
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
 resolve_s3 = true
+stack_name = "finance-app"
+s3_prefix = "finance-app"
+region = "ap-southeast-2"
+disable_rollback = true
+image_repositories = []
 
 [default.package.parameters]
 resolve_s3 = true

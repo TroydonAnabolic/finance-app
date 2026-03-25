@@ -4,7 +4,7 @@ import { lambdaHandler } from '../../app.mjs';
 import { expect } from 'chai';
 var event, context;
 
-describe('Tests index', function () {
+describe('Tests processRecurringTransactions', function () {
     it('verifies successful response', async () => {
         const result = await lambdaHandler(event, context)
 
@@ -15,6 +15,6 @@ describe('Tests index', function () {
         let response = JSON.parse(result.body);
 
         expect(response).to.be.an('object');
-        expect(response.message).to.be.equal("hello world");
+        expect(response.message).to.be.equal("Recurring transactions processed");
     });
 });
