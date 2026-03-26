@@ -37,6 +37,39 @@ const EDIT_SCOPE_OPTIONS: { value: RecurringEditScope; label: string }[] = [
   { value: "all", label: "Edit all transactions in series" },
 ];
 
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function toDateTimeLocalInput(value: string): string {
+  if (!value) return "";
+  if (!value.includes("T")) {
+    return `${value}T00:00`;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  const yyyy = parsed.getFullYear();
+  const mm = pad2(parsed.getMonth() + 1);
+  const dd = pad2(parsed.getDate());
+  const hh = pad2(parsed.getHours());
+  const min = pad2(parsed.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${min}`;
+}
+
+function fromDateTimeLocalInput(value: string, preserveDateOnly: boolean): string {
+  if (!value) return "";
+  if (preserveDateOnly) {
+    return value.slice(0, 10);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toISOString();
+}
+
 export function EditTransactionModal({ open, onClose, transaction }: Props) {
   const { people, transactions, editTransaction, editTransactionSeries } = useApp();
   const [type, setType] = useState<TransactionType>("expense");
@@ -44,6 +77,7 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
   const [category, setCategory] = useState<Category>("other");
   const [description, setDescription] = useState("");
   const [date, setDate] = useState("");
+  const [preserveDateOnly, setPreserveDateOnly] = useState(false);
   const [personId, setPersonId] = useState("");
   const [isRecurring, setIsRecurring] = useState(false);
   const [recurrenceFrequency, setRecurrenceFrequency] = useState<RecurrenceFrequency>("monthly");
@@ -78,7 +112,8 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
       setAmount(String(transaction.amount));
       setCategory(transaction.category);
       setDescription(transaction.description);
-      setDate(transaction.date);
+      setPreserveDateOnly(!transaction.date.includes("T"));
+      setDate(toDateTimeLocalInput(transaction.date));
       setPersonId(transaction.personId);
       const recurring =
         !!transaction.isRecurring ||
@@ -97,6 +132,7 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
       setRecurrenceFrequency("monthly");
       setRecurrenceInterval("1");
       setRecurrenceEndDate("");
+      setPreserveDateOnly(false);
       setEditScope("this");
     }
   }, [open, transaction, seriesTemplate]);
@@ -104,7 +140,13 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
   const handleSubmit = async () => {
     if (!transaction) return;
     const parsedInterval = parseInt(recurrenceInterval, 10);
-    const recurrenceGroupId = isRecurring ? (transaction.recurrenceGroupId || crypto.randomUUID()) : null;
+    const isSingleOccurrenceEdit =
+      editScope === "this" &&
+      (transaction.recurrenceStatus === "occurrence" || !!transaction.recurrenceSourceId);
+
+    const recurrenceGroupId = isRecurring
+      ? (transaction.recurrenceGroupId || (isSingleOccurrenceEdit ? null : crypto.randomUUID()))
+      : null;
     if (isRecurring && (!parsedInterval || parsedInterval < 1)) {
       toast.error("Recurrence interval must be at least 1");
       return;
@@ -116,12 +158,14 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
         amount: parseFloat(amount),
         category,
         description,
-        date,
+        date: fromDateTimeLocalInput(date, preserveDateOnly),
         personId,
-        isRecurring,
-        recurrenceStatus: isRecurring ? "template" : "one_time",
+        isRecurring: isSingleOccurrenceEdit ? false : isRecurring,
+        recurrenceStatus: isRecurring
+          ? (isSingleOccurrenceEdit ? "occurrence" : "template")
+          : "one_time",
         recurrenceGroupId,
-        recurrenceSourceId: null,
+        recurrenceSourceId: isSingleOccurrenceEdit ? transaction.recurrenceSourceId || null : null,
         recurrence: isRecurring
           ? {
               frequency: recurrenceFrequency,
@@ -165,7 +209,7 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
         <Select label="Person" value={personId} onChange={(e) => setPersonId(e.target.value)}
           options={[{ value: "", label: "Select person..." }, ...budgetPeople.map((p) => ({ value: p.id, label: p.name }))]} />
         <Input label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
-        <Input label="Date" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        <Input label="Date & Time" type="datetime-local" step="60" value={date} onChange={(e) => setDate(e.target.value)} />
         {canEditSeries && (
           <Select
             label="Apply changes to"

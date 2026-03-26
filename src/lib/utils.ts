@@ -15,6 +15,19 @@ export function formatDate(date: string): string {
   return format(parseISO(date), "dd MMM yyyy");
 }
 
+export function formatDateTime(date: string): string {
+  try {
+    const d = parseISO(date);
+    if (d.getHours() === 0 && d.getMinutes() === 0 && d.getSeconds() === 0 && d.getMilliseconds() === 0) {
+      // Looks like a date-only value
+      return format(d, "dd MMM yyyy");
+    }
+    return format(d, "dd MMM yyyy HH:mm");
+  } catch {
+    return date;
+  }
+}
+
 export function getPeriodSummary(transactions: Transaction[], start: Date, end: Date): PeriodSummary {
   const inPeriod = transactions.filter((t) => {
     const d = parseISO(t.date);

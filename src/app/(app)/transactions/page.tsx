@@ -8,16 +8,17 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Badge } from "@/components/ui/Badge";
-import { CATEGORY_COLORS, formatCurrency, formatDate } from "@/lib/utils";
+import { CATEGORY_COLORS, formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
 import { exportTransactionsToCSV } from "@/lib/csv";
 import { Plus, Upload, Download, Search, Pencil, Trash2 } from "lucide-react";
 import type { Transaction } from "@/types";
 import toast from "react-hot-toast";
 
-type ColumnId = "date" | "description" | "category" | "person" | "amount" | "recurrence" | "recurrenceGroup";
+type ColumnId = "date" | "dateTime" | "description" | "category" | "person" | "amount" | "recurrence" | "recurrenceGroup";
 
 const COLUMN_CONFIG: { id: ColumnId; label: string }[] = [
   { id: "date", label: "Date" },
+  { id: "dateTime", label: "Date & Time" },
   { id: "description", label: "Description" },
   { id: "category", label: "Category" },
   { id: "person", label: "Person" },
@@ -28,6 +29,7 @@ const COLUMN_CONFIG: { id: ColumnId; label: string }[] = [
 
 const DEFAULT_VISIBLE_COLUMNS: Record<ColumnId, boolean> = {
   date: true,
+  dateTime: false,
   description: true,
   category: true,
   person: true,
@@ -194,6 +196,7 @@ export default function TransactionsPage() {
               <thead>
                 <tr className="border-b border-obsidian-600/50">
                   {visibleColumns.date && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Date</th>}
+                  {visibleColumns.dateTime && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Date & Time</th>}
                   {visibleColumns.description && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Description</th>}
                   {visibleColumns.category && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Category</th>}
                   {visibleColumns.person && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Person</th>}
@@ -209,6 +212,7 @@ export default function TransactionsPage() {
                   return (
                     <tr key={t.id} className="border-b border-obsidian-700/50 last:border-0 hover:bg-obsidian-700/30 transition-colors group">
                       {visibleColumns.date && <td className="px-4 py-3 text-xs font-mono text-white/40 whitespace-nowrap">{formatDate(t.date)}</td>}
+                      {visibleColumns.dateTime && <td className="px-4 py-3 text-xs font-mono text-white/40 whitespace-nowrap">{formatDateTime(t.date)}</td>}
                       {visibleColumns.description && <td className="px-4 py-3 text-sm font-body text-white max-w-[200px] truncate">{t.description || "—"}</td>}
                       {visibleColumns.category && (
                         <td className="px-4 py-3">
