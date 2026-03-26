@@ -10,7 +10,7 @@ import { Select } from "@/components/ui/Select";
 import { Badge } from "@/components/ui/Badge";
 import { CATEGORY_COLORS, formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
 import { exportTransactionsToCSV } from "@/lib/csv";
-import { Plus, Upload, Download, Search, Pencil, Trash2 } from "lucide-react";
+import { Plus, Upload, Download, Search, Pencil, Trash2, RefreshCw } from "lucide-react";
 import type { Transaction } from "@/types";
 import toast from "react-hot-toast";
 
@@ -37,7 +37,7 @@ const DEFAULT_VISIBLE_COLUMNS: Record<ColumnId, boolean> = {
 };
 
 export default function TransactionsPage() {
-  const { transactions, people, budgets, activeBudget, removeTransaction } = useApp();
+  const { transactions, people, budgets, activeBudget, removeTransaction, refresh } = useApp();
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [editTx, setEditTx] = useState<Transaction | null>(null);
@@ -46,6 +46,7 @@ export default function TransactionsPage() {
   const [catFilter, setCatFilter] = useState("all");
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
+const [refreshing, setRefreshing] = useState(false);
 
   const budgetTx = useMemo(() =>
     activeBudget ? transactions.filter((t) => t.budgetId === activeBudget.id) : [],
@@ -222,19 +223,36 @@ export default function TransactionsPage() {
         </select>
       </div>
 
-      {/* Table */}
-      {/* Delete Selected button */}
-      <div className="flex items-center mb-2">
+            {/* Refresh and Delete Selected buttons */}
+      <div className="flex items-center mb-2 gap-2">
+        <button
+          type="button"
+          onClick={async () => {
+            setRefreshing(true);
+            try {
+              await refresh();
+            } finally {
+              setRefreshing(false);
+            }
+          }}
+          disabled={refreshing}
+          className="p-2 rounded-lg border border-obsidian-600 bg-obsidian-800 hover:bg-obsidian-700 text-white/70 hover:text-white transition-colors flex items-center justify-center"
+          title="Refresh transactions"
+          style={{ minWidth: 36, minHeight: 36 }}
+        >
+          <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
+        </button>
         <Button
           variant="danger"
           size="sm"
           disabled={selected.size === 0}
           onClick={handleDeleteSelected}
-          className="mr-2"
         >
           <Trash2 size={13} className="mr-1" /> Delete Selected
         </Button>
       </div>
+      
+      {/* Table */}
       <div className="bg-obsidian-800/60 border border-obsidian-600/50 rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
           <div className="py-16 text-center text-white/30 font-body text-sm">
