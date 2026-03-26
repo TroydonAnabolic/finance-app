@@ -82,86 +82,91 @@ function toStoredDateValue(nextDate, frequency) {
 }
 
 export const lambdaHandler = async (event, context) => {
-  getFirebaseApp();
-  const db = getFirestore();
-  const now = new Date();
-  console.log(`[Recurring] AWS Lambda triggered at ${now.toISOString()}`);
-  let txSnap;
   try {
-    txSnap = await db
-      .collection("transactions")
-      .where("isRecurring", "==", true)
-      .get();
-    console.log(`[Recurring] Found ${txSnap.docs.length} recurring templates.`);
-  } catch (err) {
-    console.error(`[Recurring] Failed to query recurring templates: ${String(err)}`);
-    return { statusCode: 500, body: JSON.stringify({ error: "Failed to query recurring templates" }) };
-  }
-  for (const doc of txSnap.docs) {
-    const tx = doc.data();
-    if (!tx.recurrence || !tx.date) {
-      console.log(`[Recurring] Skip ${doc.id}: missing recurrence or date.`);
-      continue;
-    }
-    const { frequency, interval, endsOn } = tx.recurrence;
-    if (!frequency || !interval || interval < 1) {
-      console.log(`[Recurring] Skip ${doc.id}: invalid recurrence settings.`);
-      continue;
-    }
-    const lastDate = parseTransactionDate(tx.date);
-    if (!lastDate) {
-      console.log(`[Recurring] Skip ${doc.id}: invalid last date.`);
-      continue;
-    }
-    const endDate = parseEndDate(endsOn);
-    if (endDate && now.getTime() > endDate.getTime()) {
-      console.log(`[Recurring] Skip ${doc.id}: end date already passed.`);
-      continue;
-    }
-    const nextDate = addToDate(lastDate, frequency, interval);
-    if (nextDate.getTime() > now.getTime()) {
-      console.log(`[Recurring] Skip ${doc.id}: next occurrence not due yet.`);
-      continue;
-    }
-    if (endDate && nextDate.getTime() > endDate.getTime()) {
-      console.log(`[Recurring] Skip ${doc.id}: next occurrence after end date.`);
-      continue;
-    }
-    const nextDateValue = toStoredDateValue(nextDate, frequency);
-    const recurrenceGroupId = tx.recurrenceGroupId || doc.id;
-    const generatedTx = {
-      ...tx,
-      date: nextDateValue,
-      createdAt: new Date().toISOString(),
-      isRecurring: false,
-      recurrenceStatus: "occurrence",
-      recurrenceGroupId,
-      recurrence: tx.recurrence
-        ? {
-            frequency: tx.recurrence.frequency,
-            interval: tx.recurrence.interval,
-            endsOn: tx.recurrence.endsOn ?? null,
-          }
-        : null,
-      recurrenceSourceId: doc.id,
-    };
+    const now = new Date();
+    console.log(`[Recurring] AWS Lambda triggered at ${now.toISOString()}`);
+    const app = getFirebaseApp();
+    const db = getFirestore(app);
+    let txSnap;
     try {
-      await db.collection("transactions").add(generatedTx);
+      txSnap = await db
+        .collection("transactions")
+        .where("isRecurring", "==", true)
+        .get();
+      console.log(`[Recurring] Found ${txSnap.docs.length} recurring templates.`);
     } catch (err) {
-      console.error(`[Recurring] Failed to create generated tx for ${doc.id}: ${String(err)}`);
-      continue;
+      console.error(`[Recurring] Failed to query recurring templates: ${String(err)}`);
+      return { statusCode: 500, body: JSON.stringify({ error: "Failed to query recurring templates" }) };
     }
-    try {
-      await doc.ref.update({
+    for (const doc of txSnap.docs) {
+      const tx = doc.data();
+      if (!tx.recurrence || !tx.date) {
+        console.log(`[Recurring] Skip ${doc.id}: missing recurrence or date.`);
+        continue;
+      }
+      const { frequency, interval, endsOn } = tx.recurrence;
+      if (!frequency || !interval || interval < 1) {
+        console.log(`[Recurring] Skip ${doc.id}: invalid recurrence settings.`);
+        continue;
+      }
+      const lastDate = parseTransactionDate(tx.date);
+      if (!lastDate) {
+        console.log(`[Recurring] Skip ${doc.id}: invalid last date.`);
+        continue;
+      }
+      const endDate = parseEndDate(endsOn);
+      if (endDate && now.getTime() > endDate.getTime()) {
+        console.log(`[Recurring] Skip ${doc.id}: end date already passed.`);
+        continue;
+      }
+      const nextDate = addToDate(lastDate, frequency, interval);
+      if (nextDate.getTime() > now.getTime()) {
+        console.log(`[Recurring] Skip ${doc.id}: next occurrence not due yet.`);
+        continue;
+      }
+      if (endDate && nextDate.getTime() > endDate.getTime()) {
+        console.log(`[Recurring] Skip ${doc.id}: next occurrence after end date.`);
+        continue;
+      }
+      const nextDateValue = toStoredDateValue(nextDate, frequency);
+      const recurrenceGroupId = tx.recurrenceGroupId || doc.id;
+      const generatedTx = {
+        ...tx,
         date: nextDateValue,
-        recurrenceStatus: "template",
+        createdAt: new Date().toISOString(),
+        isRecurring: false,
+        recurrenceStatus: "occurrence",
         recurrenceGroupId,
-      });
-      console.log(`[Recurring] Generated and advanced template ${doc.id} to ${nextDateValue}.`);
-    } catch (err) {
-      console.error(`[Recurring] Generated tx but failed to update ${doc.id}: ${String(err)}`);
+        recurrence: tx.recurrence
+          ? {
+              frequency: tx.recurrence.frequency,
+              interval: tx.recurrence.interval,
+              endsOn: tx.recurrence.endsOn ?? null,
+            }
+          : null,
+        recurrenceSourceId: doc.id,
+      };
+      try {
+        await db.collection("transactions").add(generatedTx);
+      } catch (err) {
+        console.error(`[Recurring] Failed to create generated tx for ${doc.id}: ${String(err)}`);
+        continue;
+      }
+      try {
+        await doc.ref.update({
+          date: nextDateValue,
+          recurrenceStatus: "template",
+          recurrenceGroupId,
+        });
+        console.log(`[Recurring] Generated and advanced template ${doc.id} to ${nextDateValue}.`);
+      } catch (err) {
+        console.error(`[Recurring] Generated tx but failed to update ${doc.id}: ${String(err)}`);
+      }
     }
+    console.log("[Recurring] AWS Lambda run complete.");
+    return { statusCode: 200, body: JSON.stringify({ message: "Recurring transactions processed" }) };
+  } catch (err) {
+    console.error(`[Recurring] Top-level error: ${err && err.stack ? err.stack : String(err)}`);
+    return { statusCode: 500, body: JSON.stringify({ error: "Top-level error", details: String(err) }) };
   }
-  console.log("[Recurring] AWS Lambda run complete.");
-  return { statusCode: 200, body: JSON.stringify({ message: "Recurring transactions processed" }) };
 };
