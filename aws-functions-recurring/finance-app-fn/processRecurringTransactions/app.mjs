@@ -2,8 +2,7 @@
 import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore } from "firebase-admin/firestore";
 
-// Types copied from Azure version
-const RECURRENCE_FREQUENCIES = ["minute", "hour", "daily", "weekly", "monthly", "yearly"];
+const RECURRENCE_FREQUENCIES = new Set(["minute", "hour", "daily", "weekly", "monthly", "yearly"]);
 
 /**
  * @typedef {Object} Recurrence
@@ -59,6 +58,21 @@ function addToDate(date, freq, interval) {
   return d;
 }
 
+function normalizeFrequency(value) {
+  if (!value || typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case "minutes": return "minute";
+    case "hours": return "hour";
+    case "day": return "daily";
+    case "week": return "weekly";
+    case "month": return "monthly";
+    case "year": return "yearly";
+    default:
+      return RECURRENCE_FREQUENCIES.has(normalized) ? normalized : null;
+  }
+}
+
 function parseTransactionDate(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return null;
@@ -81,6 +95,31 @@ function toStoredDateValue(nextDate, frequency) {
   return nextDate.toISOString().slice(0, 10);
 }
 
+function getLatestDueDate(lastDate, frequency, interval, now, endDate) {
+  let dueDate = addToDate(lastDate, frequency, interval);
+  if (endDate && dueDate.getTime() > endDate.getTime()) {
+    return null;
+  }
+  if (dueDate.getTime() > now.getTime()) {
+    return null;
+  }
+
+  // Coalesce missed runs to a single occurrence at the latest due slot.
+  let latestDueDate = dueDate;
+  while (true) {
+    const nextCandidate = addToDate(latestDueDate, frequency, interval);
+    if (endDate && nextCandidate.getTime() > endDate.getTime()) {
+      break;
+    }
+    if (nextCandidate.getTime() > now.getTime()) {
+      break;
+    }
+    latestDueDate = nextCandidate;
+  }
+
+  return latestDueDate;
+}
+
 export const lambdaHandler = async (event, context) => {
   try {
     const now = new Date();
@@ -98,69 +137,80 @@ export const lambdaHandler = async (event, context) => {
       console.error(`[Recurring] Failed to query recurring templates: ${String(err)}`);
       return { statusCode: 500, body: JSON.stringify({ error: "Failed to query recurring templates" }) };
     }
+    const txCollection = db.collection("transactions");
+
     for (const doc of txSnap.docs) {
-      const tx = doc.data();
-      if (!tx.recurrence || !tx.date) {
-        console.log(`[Recurring] Skip ${doc.id}: missing recurrence or date.`);
-        continue;
-      }
-      const { frequency, interval, endsOn } = tx.recurrence;
-      if (!frequency || !interval || interval < 1) {
-        console.log(`[Recurring] Skip ${doc.id}: invalid recurrence settings.`);
-        continue;
-      }
-      const lastDate = parseTransactionDate(tx.date);
-      if (!lastDate) {
-        console.log(`[Recurring] Skip ${doc.id}: invalid last date.`);
-        continue;
-      }
-      const endDate = parseEndDate(endsOn);
-      if (endDate && now.getTime() > endDate.getTime()) {
-        console.log(`[Recurring] Skip ${doc.id}: end date already passed.`);
-        continue;
-      }
-      const nextDate = addToDate(lastDate, frequency, interval);
-      if (nextDate.getTime() > now.getTime()) {
-        console.log(`[Recurring] Skip ${doc.id}: next occurrence not due yet.`);
-        continue;
-      }
-      if (endDate && nextDate.getTime() > endDate.getTime()) {
-        console.log(`[Recurring] Skip ${doc.id}: next occurrence after end date.`);
-        continue;
-      }
-      const nextDateValue = toStoredDateValue(nextDate, frequency);
-      const recurrenceGroupId = tx.recurrenceGroupId || doc.id;
-      const generatedTx = {
-        ...tx,
-        date: nextDateValue,
-        createdAt: new Date().toISOString(),
-        isRecurring: false,
-        recurrenceStatus: "occurrence",
-        recurrenceGroupId,
-        recurrence: tx.recurrence
-          ? {
-              frequency: tx.recurrence.frequency,
-              interval: tx.recurrence.interval,
+      let processedDateValue = null;
+      try {
+        await db.runTransaction(async (firestoreTx) => {
+          const freshSnap = await firestoreTx.get(doc.ref);
+          if (!freshSnap.exists) {
+            return;
+          }
+
+          const tx = freshSnap.data();
+          if (!tx || !tx.recurrence || !tx.date) {
+            return;
+          }
+
+          const normalizedFrequency = normalizeFrequency(tx.recurrence.frequency);
+          const parsedInterval = Number.parseInt(String(tx.recurrence.interval), 10);
+          if (!normalizedFrequency || Number.isNaN(parsedInterval) || parsedInterval < 1) {
+            return;
+          }
+
+          const lastDate = parseTransactionDate(tx.date);
+          if (!lastDate) {
+            return;
+          }
+
+          const endDate = parseEndDate(tx.recurrence.endsOn);
+          if (endDate && now.getTime() > endDate.getTime()) {
+            return;
+          }
+
+          const dueDate = getLatestDueDate(lastDate, normalizedFrequency, parsedInterval, now, endDate);
+          if (!dueDate) {
+            return;
+          }
+
+          const dueDateValue = toStoredDateValue(dueDate, normalizedFrequency);
+          const recurrenceGroupId = tx.recurrenceGroupId || doc.id;
+          const generatedTx = {
+            ...tx,
+            date: dueDateValue,
+            createdAt: new Date().toISOString(),
+            isRecurring: false,
+            recurrenceStatus: "occurrence",
+            recurrenceGroupId,
+            recurrence: {
+              frequency: normalizedFrequency,
+              interval: parsedInterval,
               endsOn: tx.recurrence.endsOn ?? null,
-            }
-          : null,
-        recurrenceSourceId: doc.id,
-      };
-      try {
-        await db.collection("transactions").add(generatedTx);
+            },
+            recurrenceSourceId: doc.id,
+          };
+
+          const newTxRef = txCollection.doc();
+          firestoreTx.create(newTxRef, generatedTx);
+          firestoreTx.update(doc.ref, {
+            date: dueDateValue,
+            recurrenceStatus: "template",
+            recurrenceGroupId,
+            recurrence: generatedTx.recurrence,
+          });
+
+          processedDateValue = dueDateValue;
+        });
       } catch (err) {
-        console.error(`[Recurring] Failed to create generated tx for ${doc.id}: ${String(err)}`);
+        console.error(`[Recurring] Failed to process ${doc.id}: ${String(err)}`);
         continue;
       }
-      try {
-        await doc.ref.update({
-          date: nextDateValue,
-          recurrenceStatus: "template",
-          recurrenceGroupId,
-        });
-        console.log(`[Recurring] Generated and advanced template ${doc.id} to ${nextDateValue}.`);
-      } catch (err) {
-        console.error(`[Recurring] Generated tx but failed to update ${doc.id}: ${String(err)}`);
+
+      if (processedDateValue) {
+        console.log(`[Recurring] Generated and advanced template ${doc.id} to ${processedDateValue}.`);
+      } else {
+        console.log(`[Recurring] Skip ${doc.id}: not due, invalid config, or already processed.`);
       }
     }
     console.log("[Recurring] AWS Lambda run complete.");
