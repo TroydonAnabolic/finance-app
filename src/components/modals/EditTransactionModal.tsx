@@ -140,9 +140,15 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
   const handleSubmit = async () => {
     if (!transaction) return;
     const parsedInterval = parseInt(recurrenceInterval, 10);
+    const isTemplateTransaction = transaction.recurrenceStatus === "template" || !!transaction.isRecurring;
+    const isOccurrenceLikeTransaction = !isTemplateTransaction && (
+      transaction.recurrenceStatus === "occurrence" ||
+      !!transaction.recurrenceSourceId ||
+      !!transaction.recurrenceGroupId
+    );
     const isSingleOccurrenceEdit =
       editScope === "this" &&
-      (transaction.recurrenceStatus === "occurrence" || !!transaction.recurrenceSourceId);
+      isOccurrenceLikeTransaction;
 
     const recurrenceGroupId = isRecurring
       ? (transaction.recurrenceGroupId || (isSingleOccurrenceEdit ? null : crypto.randomUUID()))

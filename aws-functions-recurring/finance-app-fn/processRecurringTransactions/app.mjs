@@ -22,6 +22,7 @@ const RECURRENCE_FREQUENCIES = new Set(["minute", "hour", "daily", "weekly", "mo
  * @property {string} [recurrenceStatus]
  * @property {string|null} [recurrenceGroupId]
  * @property {string|null} [recurrenceSourceId]
+ * @property {string|null} [recurrenceCursorDate]
  * @property {Recurrence|null} [recurrence]
  * @property {string} type
  * @property {string} budgetId
@@ -149,7 +150,12 @@ export const lambdaHandler = async (event, context) => {
           }
 
           const tx = freshSnap.data();
-          if (!tx || !tx.recurrence || !tx.date) {
+          if (!tx || !tx.recurrence || (!tx.date && !tx.recurrenceCursorDate)) {
+            return;
+          }
+
+          const isTemplate = tx.recurrenceStatus === "template" && tx.recurrenceSourceId == null && tx.isRecurring === true;
+          if (!isTemplate) {
             return;
           }
 
@@ -159,7 +165,8 @@ export const lambdaHandler = async (event, context) => {
             return;
           }
 
-          const lastDate = parseTransactionDate(tx.date);
+          const cursorSourceDate = tx.recurrenceCursorDate || tx.date;
+          const lastDate = parseTransactionDate(cursorSourceDate);
           if (!lastDate) {
             return;
           }
@@ -183,6 +190,7 @@ export const lambdaHandler = async (event, context) => {
             isRecurring: false,
             recurrenceStatus: "occurrence",
             recurrenceGroupId,
+            recurrenceCursorDate: null,
             recurrence: {
               frequency: normalizedFrequency,
               interval: parsedInterval,
@@ -194,9 +202,11 @@ export const lambdaHandler = async (event, context) => {
           const newTxRef = txCollection.doc();
           firestoreTx.create(newTxRef, generatedTx);
           firestoreTx.update(doc.ref, {
-            date: dueDateValue,
+            isRecurring: true,
             recurrenceStatus: "template",
+            recurrenceSourceId: null,
             recurrenceGroupId,
+            recurrenceCursorDate: dueDateValue,
             recurrence: generatedTx.recurrence,
           });
 
@@ -208,7 +218,7 @@ export const lambdaHandler = async (event, context) => {
       }
 
       if (processedDateValue) {
-        console.log(`[Recurring] Generated and advanced template ${doc.id} to ${processedDateValue}.`);
+        console.log(`[Recurring] Generated occurrence for ${doc.id}; advanced recurrence cursor to ${processedDateValue}.`);
       } else {
         console.log(`[Recurring] Skip ${doc.id}: not due, invalid config, or already processed.`);
       }

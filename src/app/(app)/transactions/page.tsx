@@ -46,18 +46,6 @@ export default function TransactionsPage() {
   const [catFilter, setCatFilter] = useState("all");
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
-    // Close columns menu on outside click
-    useEffect(() => {
-      if (!showColumnMenu) return;
-      function handleClick(e: MouseEvent) {
-        if (columnMenuRef.current && !columnMenuRef.current.contains(e.target as Node)) {
-          setShowColumnMenu(false);
-        }
-      }
-      document.addEventListener("mousedown", handleClick);
-      return () => document.removeEventListener("mousedown", handleClick);
-    }, [showColumnMenu]);
-  const [visibleColumns, setVisibleColumns] = useState<Record<ColumnId, boolean>>(DEFAULT_VISIBLE_COLUMNS);
 
   const budgetTx = useMemo(() =>
     activeBudget ? transactions.filter((t) => t.budgetId === activeBudget.id) : [],
@@ -71,12 +59,64 @@ export default function TransactionsPage() {
     return true;
   }), [budgetTx, typeFilter, catFilter, search]);
 
+  // Selection state (must be after filtered)
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const allVisibleIds = useMemo(() => filtered.map((t) => t.id), [filtered]);
+  const allSelected = allVisibleIds.length > 0 && allVisibleIds.every((id) => selected.has(id));
+  const someSelected = allVisibleIds.some((id) => selected.has(id));
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        allVisibleIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        allVisibleIds.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+  };
+  const toggleSelectOne = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+    // Close columns menu on outside click
+    useEffect(() => {
+      if (!showColumnMenu) return;
+      function handleClick(e: MouseEvent) {
+        if (columnMenuRef.current && !columnMenuRef.current.contains(e.target as Node)) {
+          setShowColumnMenu(false);
+        }
+      }
+      document.addEventListener("mousedown", handleClick);
+      return () => document.removeEventListener("mousedown", handleClick);
+    }, [showColumnMenu]);
+  const [visibleColumns, setVisibleColumns] = useState<Record<ColumnId, boolean>>(DEFAULT_VISIBLE_COLUMNS);
+
   const personMap = useMemo(() => Object.fromEntries(people.map((p) => [p.id, p])), [people]);
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this transaction?")) return;
     await removeTransaction(id);
     toast.success("Deleted");
+  };
+
+  // Delete selected transactions
+  const handleDeleteSelected = async () => {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} selected transaction(s)?`)) return;
+    for (const id of selected) {
+      await removeTransaction(id);
+    }
+    setSelected(new Set());
+    toast.success(`Deleted ${selected.size} transaction(s)`);
   };
 
   const categories = [...new Set(budgetTx.map((t) => t.category))];
@@ -183,6 +223,18 @@ export default function TransactionsPage() {
       </div>
 
       {/* Table */}
+      {/* Delete Selected button */}
+      <div className="flex items-center mb-2">
+        <Button
+          variant="danger"
+          size="sm"
+          disabled={selected.size === 0}
+          onClick={handleDeleteSelected}
+          className="mr-2"
+        >
+          <Trash2 size={13} className="mr-1" /> Delete Selected
+        </Button>
+      </div>
       <div className="bg-obsidian-800/60 border border-obsidian-600/50 rounded-xl overflow-hidden">
         {filtered.length === 0 ? (
           <div className="py-16 text-center text-white/30 font-body text-sm">
@@ -193,6 +245,19 @@ export default function TransactionsPage() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-obsidian-600/50">
+                  {/* Select all checkbox */}
+                  <th className="w-10 px-3 py-3 align-middle text-xs font-display font-semibold text-white/30 uppercase tracking-wider">
+                    <div className="flex items-center justify-center">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={el => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                        onChange={toggleSelectAll}
+                        aria-label="Select all"
+                        className="accent-lime-400"
+                      />
+                    </div>
+                  </th>
                   {visibleColumns.dateTime && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Date & Time</th>}
                   {visibleColumns.description && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Description</th>}
                   {visibleColumns.category && <th className="text-left px-4 py-3 text-xs font-display font-semibold text-white/30 uppercase tracking-wider">Category</th>}
@@ -206,8 +271,21 @@ export default function TransactionsPage() {
               <tbody>
                 {filtered.map((t, i) => {
                   const person = personMap[t.personId];
+                  const isChecked = selected.has(t.id);
                   return (
                     <tr key={t.id} className="border-b border-obsidian-700/50 last:border-0 hover:bg-obsidian-700/30 transition-colors group">
+                      {/* Select one checkbox */}
+                      <td className="w-10 px-3 py-3 align-middle">
+                        <div className="flex items-center justify-center">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => toggleSelectOne(t.id)}
+                            aria-label="Select transaction"
+                            className="accent-lime-400"
+                          />
+                        </div>
+                      </td>
                       {visibleColumns.dateTime && <td className="px-4 py-3 text-xs font-mono text-white/40 whitespace-nowrap">{formatDateTime(t.date)}</td>}
                       {visibleColumns.description && <td className="px-4 py-3 text-sm font-body text-white max-w-[200px] truncate">{t.description || "—"}</td>}
                       {visibleColumns.category && (
