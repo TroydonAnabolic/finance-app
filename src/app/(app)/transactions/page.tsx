@@ -16,6 +16,8 @@ import toast from "react-hot-toast";
 
 type ColumnId = "dateTime" | "description" | "category" | "person" | "amount" | "recurrence" | "recurrenceGroup";
 
+type ViewMode = "completed" | "upcoming" | "all";
+
 const COLUMN_CONFIG: { id: ColumnId; label: string }[] = [
   { id: "dateTime", label: "Date & Time" },
   { id: "description", label: "Description" },
@@ -44,6 +46,8 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [catFilter, setCatFilter] = useState("all");
+  // Transaction view mode: completed, upcoming, all
+  const [viewMode, setViewMode] = useState<ViewMode>("completed");
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
 const [refreshing, setRefreshing] = useState(false);
@@ -53,12 +57,180 @@ const [refreshing, setRefreshing] = useState(false);
     [transactions, activeBudget]
   );
 
-  const filtered = useMemo(() => budgetTx.filter((t) => {
-    if (typeFilter !== "all" && t.type !== typeFilter) return false;
-    if (catFilter !== "all" && t.category !== catFilter) return false;
-    if (search && !t.description.toLowerCase().includes(search.toLowerCase()) && !t.category.includes(search.toLowerCase())) return false;
-    return true;
-  }), [budgetTx, typeFilter, catFilter, search]);
+  function parseTxDate(value: string): Date | null {
+    if (!value) return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  function isDateOnly(value: string): boolean {
+    return !value.includes("T");
+  }
+
+  function addToDate(date: Date, frequency: NonNullable<Transaction["recurrence"]>["frequency"], interval: number): Date {
+    const next = new Date(date);
+    switch (frequency) {
+      case "minute":
+        next.setMinutes(next.getMinutes() + interval);
+        break;
+      case "hour":
+        next.setHours(next.getHours() + interval);
+        break;
+      case "daily":
+        next.setDate(next.getDate() + interval);
+        break;
+      case "weekly":
+        next.setDate(next.getDate() + interval * 7);
+        break;
+      case "monthly":
+        next.setMonth(next.getMonth() + interval);
+        break;
+      case "yearly":
+        next.setFullYear(next.getFullYear() + interval);
+        break;
+      default:
+        break;
+    }
+    return next;
+  }
+
+  function toStoredDateValue(nextDate: Date, frequency: NonNullable<Transaction["recurrence"]>["frequency"]): string {
+    if (frequency === "minute" || frequency === "hour") {
+      return nextDate.toISOString();
+    }
+    return nextDate.toISOString().slice(0, 10);
+  }
+
+  const filtered = useMemo(() => {
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const matchesFilters = (t: Transaction) => {
+      if (typeFilter !== "all" && t.type !== typeFilter) return false;
+      if (catFilter !== "all" && t.category !== catFilter) return false;
+      if (
+        search &&
+        !t.description.toLowerCase().includes(search.toLowerCase()) &&
+        !t.category.includes(search.toLowerCase())
+      ) {
+        return false;
+      }
+      return true;
+    };
+
+    const isTemplate = (t: Transaction) => t.recurrenceStatus === "template" || !!t.isRecurring;
+    const isOccurrenceLike = (t: Transaction) => t.recurrenceStatus === "occurrence" || !!t.recurrenceSourceId;
+
+    const isFuture = (t: Transaction) => {
+      const date = parseTxDate(t.date);
+      if (!date) return false;
+      if (isDateOnly(t.date)) {
+        return date.getTime() > startOfToday.getTime();
+      }
+      return date.getTime() > now.getTime();
+    };
+
+    const belongsToTemplate = (candidate: Transaction, template: Transaction) => {
+      const templateGroupId = template.recurrenceGroupId || template.id;
+      return (
+        candidate.id !== template.id &&
+        (candidate.recurrenceSourceId === template.id ||
+          (!!candidate.recurrenceGroupId && candidate.recurrenceGroupId === templateGroupId))
+      );
+    };
+
+    const base = budgetTx.filter(matchesFilters);
+    const templates = base.filter((t) => isTemplate(t) && !!t.recurrence?.frequency);
+
+    const keepFutureRecurringIds = new Set<string>();
+    const recurringSeriesGroups = new Set<string>();
+    const syntheticUpcoming: Transaction[] = [];
+
+    templates.forEach((template) => {
+      const groupId = template.recurrenceGroupId || template.id;
+      recurringSeriesGroups.add(groupId);
+
+      const seriesCandidates = base.filter((t) => isOccurrenceLike(t) && belongsToTemplate(t, template));
+      const futureCandidates = seriesCandidates
+        .filter((t) => isFuture(t))
+        .sort((a, b) => {
+          const aTime = parseTxDate(a.date)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+          const bTime = parseTxDate(b.date)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+          return aTime - bTime;
+        });
+
+      if (futureCandidates.length > 0) {
+        keepFutureRecurringIds.add(futureCandidates[0].id);
+        return;
+      }
+
+      const recurrence = template.recurrence;
+      if (!recurrence?.frequency) return;
+      const interval = recurrence.interval && recurrence.interval > 0 ? recurrence.interval : 1;
+
+      const templateDate = parseTxDate(template.date);
+      if (!templateDate) return;
+
+      let nextDate = new Date(templateDate);
+      let guard = 0;
+      while (guard < 1000 && (isDateOnly(template.date)
+        ? nextDate.getTime() <= startOfToday.getTime()
+        : nextDate.getTime() <= now.getTime())) {
+        nextDate = addToDate(nextDate, recurrence.frequency, interval);
+        guard += 1;
+      }
+
+      if (guard >= 1000) return;
+      const endDate = recurrence.endsOn ? parseTxDate(recurrence.endsOn) : null;
+      if (endDate && nextDate.getTime() > endDate.getTime()) return;
+
+      syntheticUpcoming.push({
+        ...template,
+        id: `synthetic-next-${template.id}`,
+        date: toStoredDateValue(nextDate, recurrence.frequency),
+        isRecurring: false,
+        recurrenceStatus: "occurrence",
+        recurrenceGroupId: groupId,
+        recurrenceSourceId: template.id,
+        createdAt: new Date().toISOString(),
+      });
+    });
+
+    const includeByMode = (t: Transaction) => {
+      if (viewMode === "completed") {
+        return !isFuture(t);
+      }
+
+      if (viewMode === "upcoming") {
+        if (isTemplate(t)) return false;
+        if (!isFuture(t)) return false;
+
+        if (isOccurrenceLike(t)) {
+          const groupId = t.recurrenceGroupId || "";
+          if (groupId && recurringSeriesGroups.has(groupId)) {
+            return keepFutureRecurringIds.has(t.id);
+          }
+        }
+
+        return true;
+      }
+
+      // all
+      if (isFuture(t) && isOccurrenceLike(t)) {
+        const groupId = t.recurrenceGroupId || "";
+        if (groupId && recurringSeriesGroups.has(groupId)) {
+          return keepFutureRecurringIds.has(t.id);
+        }
+      }
+
+      return true;
+    };
+
+    const fromStored = base.filter(includeByMode);
+    return (viewMode === "upcoming" || viewMode === "all")
+      ? [...fromStored, ...syntheticUpcoming]
+      : fromStored;
+  }, [budgetTx, typeFilter, catFilter, search, viewMode]);
 
   // Selection state (must be after filtered)
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -155,6 +327,8 @@ const [refreshing, setRefreshing] = useState(false);
     return `${groupId.slice(0, 8)}...${groupId.slice(-4)}`;
   };
 
+  const isSyntheticUpcoming = (t: Transaction) => t.id.startsWith("synthetic-next-");
+
   return (
     <div className="p-6 lg:p-8 flex flex-col gap-6">
       {/* Header */}
@@ -223,8 +397,20 @@ const [refreshing, setRefreshing] = useState(false);
         </select>
       </div>
 
-            {/* Refresh and Delete Selected buttons */}
+      {/* View mode, Refresh and Delete Selected buttons */}
       <div className="flex items-center mb-2 gap-2">
+        {/* View mode dropdown */}
+        <select
+          value={viewMode}
+          onChange={e => setViewMode(e.target.value as ViewMode)}
+          className="bg-obsidian-800 border border-obsidian-600 text-white/70 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60 cursor-pointer"
+          style={{ minWidth: 120 }}
+        >
+          <option value="completed">Completed</option>
+          <option value="upcoming">Upcoming</option>
+          <option value="all">All</option>
+        </select>
+        {/* Refresh button */}
         <button
           type="button"
           onClick={async () => {
@@ -305,7 +491,14 @@ const [refreshing, setRefreshing] = useState(false);
                         </div>
                       </td>
                       {visibleColumns.dateTime && <td className="px-4 py-3 text-xs font-mono text-white/40 whitespace-nowrap">{formatDateTime(t.date)}</td>}
-                      {visibleColumns.description && <td className="px-4 py-3 text-sm font-body text-white max-w-[200px] truncate">{t.description || "—"}</td>}
+                      {visibleColumns.description && (
+                        <td className="px-4 py-3 text-sm font-body text-white max-w-[260px]">
+                          <div className="truncate">{t.description || "—"}</div>
+                          {isSyntheticUpcoming(t) && (
+                            <div className="text-[10px] uppercase tracking-wider text-volt/80 mt-0.5">Next scheduled</div>
+                          )}
+                        </td>
+                      )}
                       {visibleColumns.category && (
                         <td className="px-4 py-3">
                           <Badge label={t.category} color={CATEGORY_COLORS[t.category]} />
