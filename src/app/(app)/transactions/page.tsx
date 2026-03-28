@@ -410,9 +410,10 @@ const [refreshing, setRefreshing] = useState(false);
           <option value="upcoming">Upcoming</option>
           <option value="all">All</option>
         </select>
-        {/* Refresh button */}
-        <button
+        <Button
           type="button"
+          variant="secondary"
+          size="sm"
           onClick={async () => {
             setRefreshing(true);
             try {
@@ -422,19 +423,17 @@ const [refreshing, setRefreshing] = useState(false);
             }
           }}
           disabled={refreshing}
-          className="p-2 rounded-lg border border-obsidian-600 bg-obsidian-800 hover:bg-obsidian-700 text-white/70 hover:text-white transition-colors flex items-center justify-center"
           title="Refresh transactions"
-          style={{ minWidth: 36, minHeight: 36 }}
         >
-          <RefreshCw size={16} className={refreshing ? "animate-spin" : ""} />
-        </button>
+          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> Refresh
+        </Button>
         <Button
           variant="danger"
           size="sm"
           disabled={selected.size === 0}
           onClick={handleDeleteSelected}
         >
-          <Trash2 size={13} className="mr-1" /> Delete Selected
+          <Trash2 size={13} className="mr-1" /> Delete
         </Button>
       </div>
       

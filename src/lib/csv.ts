@@ -12,6 +12,9 @@ export function exportTransactionsToCSV(transactions: Transaction[], people: Per
     Category: t.category,
     Description: t.description,
     Person: personMap[t.personId] || t.personId,
+    PaidBy: personMap[t.paidByPersonId || ""] || t.paidByPersonId || "",
+    PaidByBreakdown: t.paidByBreakdown ? JSON.stringify(t.paidByBreakdown) : "",
+    SplitType: t.splitType || "",
     Budget: budgetMap[t.budgetId] || t.budgetId,
   }));
   const csv = Papa.unparse(rows);
@@ -30,6 +33,9 @@ export interface ImportedTransaction {
   amount: number;
   category: string;
   description: string;
+  paidBy?: string;
+  paidByBreakdown?: string;
+  splitType?: string;
 }
 
 export function importTransactionsFromCSV(file: File): Promise<ImportedTransaction[]> {
@@ -45,6 +51,9 @@ export function importTransactionsFromCSV(file: File): Promise<ImportedTransacti
           amount: parseFloat(r.Amount || r.amount || "0"),
           category: (r.Category || r.category || "other").toLowerCase(),
           description: r.Description || r.description || "",
+          paidBy: r.PaidBy || r.paidBy || r.paid_by || "",
+          paidByBreakdown: r.PaidByBreakdown || r.paidByBreakdown || r.paid_by_breakdown || "",
+          splitType: (r.SplitType || r.splitType || r.split_type || "").toLowerCase(),
         }));
         resolve(imported);
       },

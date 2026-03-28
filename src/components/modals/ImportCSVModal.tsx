@@ -8,6 +8,7 @@ import { importTransactionsFromCSV, type ImportedTransaction } from "@/lib/csv";
 import { Upload, CheckCircle } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 import toast from "react-hot-toast";
+import type { SplitType } from "@/types";
 
 interface Props { open: boolean; onClose: () => void; }
 
@@ -33,10 +34,79 @@ export function ImportCSVModal({ open, onClose }: Props) {
     if (!activeBudget || !personId || preview.length === 0) return toast.error("Select a person first");
     setLoading(true);
     try {
+      const resolvePaidByPersonId = (value?: string) => {
+        const raw = (value || "").trim();
+        if (!raw) return personId;
+        const byId = budgetPeople.find((p) => p.id === raw);
+        if (byId) return byId.id;
+        const byName = budgetPeople.find((p) => p.name.toLowerCase() === raw.toLowerCase());
+        if (byName) return byName.id;
+        return personId;
+      };
+
+      const resolveSplitType = (value: string | undefined, txType: "income" | "expense"): SplitType => {
+        if (txType !== "expense") return "personal";
+        const normalized = (value || "").toLowerCase().trim();
+        return normalized === "shared_all_equal" || normalized === "shared_equal" || normalized === "shared" || normalized === "50/50"
+          ? "shared_all_equal"
+          : "personal";
+      };
+
+      const resolvePaidByBreakdown = (value: string | undefined, fallbackPayerId: string, txAmount: number) => {
+        const fallback = fallbackPayerId
+          ? [{ personId: fallbackPayerId, amount: txAmount }]
+          : [];
+
+        const raw = (value || "").trim();
+        if (!raw) return fallback;
+
+        try {
+          const parsed = JSON.parse(raw) as Array<{ personId?: string; name?: string; amount?: number | string }>;
+          if (!Array.isArray(parsed)) return fallback;
+
+          const byPerson: Record<string, number> = {};
+          parsed.forEach((entry) => {
+            const rawAmount = Number(entry.amount);
+            if (!Number.isFinite(rawAmount) || rawAmount <= 0) return;
+            let resolvedPersonId = "";
+            if (entry.personId) {
+              const byId = budgetPeople.find((p) => p.id === entry.personId);
+              if (byId) resolvedPersonId = byId.id;
+            }
+            if (!resolvedPersonId && entry.name) {
+              const byName = budgetPeople.find((p) => p.name.toLowerCase() === entry.name!.toLowerCase());
+              if (byName) resolvedPersonId = byName.id;
+            }
+            if (!resolvedPersonId) return;
+            byPerson[resolvedPersonId] = (byPerson[resolvedPersonId] || 0) + rawAmount;
+          });
+
+          const entries = Object.entries(byPerson)
+            .filter(([, valueAmount]) => valueAmount > 0)
+            .map(([entryPersonId, valueAmount]) => ({ personId: entryPersonId, amount: Number(valueAmount.toFixed(2)) }));
+
+          return entries.length > 0 ? entries : fallback;
+        } catch {
+          return fallback;
+        }
+      };
+
       await Promise.all(preview.map((t) => addTransaction({
         budgetId: activeBudget.id, personId,
         type: t.type, amount: t.amount,
         category: t.category as any, description: t.description, date: t.date,
+        paidByPersonId: (() => {
+          const fallbackPayerId = resolvePaidByPersonId(t.paidBy);
+          if (t.type !== "expense") return personId;
+          const paidByBreakdown = resolvePaidByBreakdown(t.paidByBreakdown, fallbackPayerId, t.amount);
+          return paidByBreakdown[0]?.personId || fallbackPayerId;
+        })(),
+        paidByBreakdown: (() => {
+          if (t.type !== "expense") return null;
+          const fallbackPayerId = resolvePaidByPersonId(t.paidBy);
+          return resolvePaidByBreakdown(t.paidByBreakdown, fallbackPayerId, t.amount);
+        })(),
+        splitType: resolveSplitType(t.splitType, t.type),
       })));
       toast.success(`Imported ${preview.length} transactions`);
       setPreview([]); onClose();

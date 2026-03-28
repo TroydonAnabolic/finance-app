@@ -1,12 +1,13 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
 import { Button } from "@/components/ui/Button";
 import { useApp } from "@/context/AppContext";
-import type { Transaction, Category, TransactionType } from "@/types";
+import type { Transaction, Category, SplitType, TransactionType } from "@/types";
 import type { RecurrenceFrequency } from "@/types";
+import { formatCurrency } from "@/lib/utils";
 const RECURRENCE_OPTIONS: { value: RecurrenceFrequency; label: string }[] = [
   { value: "minute", label: "Every Minute" },
   { value: "hour", label: "Every Hour" },
@@ -79,6 +80,9 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
   const [date, setDate] = useState("");
   const [preserveDateOnly, setPreserveDateOnly] = useState(false);
   const [personId, setPersonId] = useState("");
+  const [paidByPersonId, setPaidByPersonId] = useState("");
+  const [splitType, setSplitType] = useState<SplitType>("personal");
+  const [payerAmounts, setPayerAmounts] = useState<Record<string, string>>({});
   const [isRecurring, setIsRecurring] = useState(false);
   const [recurrenceFrequency, setRecurrenceFrequency] = useState<RecurrenceFrequency>("monthly");
   const [recurrenceInterval, setRecurrenceInterval] = useState("1");
@@ -97,6 +101,18 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
     : null;
 
   const seriesRecurrence = transaction?.recurrence || seriesTemplate?.recurrence || null;
+  const budgetPeople = people.filter((p) => p.budgetId === transaction?.budgetId);
+  const parsedAmount = Number.parseFloat(amount);
+  const totalAmount = Number.isFinite(parsedAmount) ? parsedAmount : 0;
+  const totalPayerAmounts = useMemo(() => budgetPeople.reduce((sum, person) => {
+    const value = Number.parseFloat(payerAmounts[person.id] || "0");
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0), [budgetPeople, payerAmounts]);
+
+  const getPayerAmount = (payerId: string) => {
+    const value = Number.parseFloat(payerAmounts[payerId] || "0");
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
 
   const recurrenceRole = transaction?.recurrenceStatus === "template"
     ? "Template"
@@ -115,6 +131,20 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
       setPreserveDateOnly(!transaction.date.includes("T"));
       setDate(toDateTimeLocalInput(transaction.date));
       setPersonId(transaction.personId);
+      setPaidByPersonId(transaction.paidByPersonId || transaction.personId);
+      setSplitType(transaction.splitType === "shared_equal" ? "shared_all_equal" : (transaction.splitType || "personal"));
+      if (transaction.paidByBreakdown?.length) {
+        const initialPayerAmounts: Record<string, string> = {};
+        transaction.paidByBreakdown.forEach((entry) => {
+          if (entry.personId) {
+            initialPayerAmounts[entry.personId] = String(entry.amount);
+          }
+        });
+        setPayerAmounts(initialPayerAmounts);
+      } else {
+        const fallbackPayerId = transaction.paidByPersonId || transaction.personId;
+        setPayerAmounts(fallbackPayerId ? { [fallbackPayerId]: String(transaction.amount) } : {});
+      }
       const recurring =
         !!transaction.isRecurring ||
         !!transaction.recurrence ||
@@ -134,11 +164,144 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
       setRecurrenceEndDate("");
       setPreserveDateOnly(false);
       setEditScope("this");
+      setPaidByPersonId("");
+      setSplitType("personal");
+      setPayerAmounts({});
     }
   }, [open, transaction, seriesTemplate]);
 
+  const fillPaymentsEquallyAcrossAllMembers = () => {
+    if (budgetPeople.length === 0) return;
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      toast.error("Enter amount first");
+      return;
+    }
+
+    const equalShare = Number((parsedAmount / budgetPeople.length).toFixed(2));
+    const next: Record<string, string> = {};
+    budgetPeople.forEach((person, index) => {
+      if (index === budgetPeople.length - 1) {
+        const subtotal = equalShare * (budgetPeople.length - 1);
+        next[person.id] = String(Number((parsedAmount - subtotal).toFixed(2)));
+      } else {
+        next[person.id] = String(equalShare);
+      }
+    });
+    setPayerAmounts(next);
+  };
+
+  const buildExpensePayerBreakdown = () => {
+    if (splitType === "shared_all_equal") {
+      return budgetPeople
+        .map((person) => ({
+          personId: person.id,
+          amount: Number.parseFloat(payerAmounts[person.id] || "0"),
+        }))
+        .filter((entry) => Number.isFinite(entry.amount) && entry.amount > 0)
+        .map((entry) => ({ ...entry, amount: Number(entry.amount.toFixed(2)) }));
+    }
+
+    const payerId = paidByPersonId || personId;
+    return payerId ? [{ personId: payerId, amount: Number(totalAmount.toFixed(2)) }] : [];
+  };
+
+  const rebalancePayerAmountsFromSlider = (targetPersonId: string, sliderPercent: number) => {
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      toast.error("Enter amount first");
+      return;
+    }
+
+    const total = parsedAmount;
+    const clampedPercent = Math.max(0, Math.min(100, sliderPercent));
+    const targetAmount = Number((total * (clampedPercent / 100)).toFixed(2));
+    const otherIds = budgetPeople.map((p) => p.id).filter((id) => id !== targetPersonId);
+    const nextNumeric: Record<string, number> = { [targetPersonId]: targetAmount };
+    const remaining = Number((total - targetAmount).toFixed(2));
+
+    if (otherIds.length > 0) {
+      const currentOtherTotal = otherIds.reduce((sum, id) => sum + getPayerAmount(id), 0);
+      if (currentOtherTotal <= 0) {
+        const equalShare = Number((remaining / otherIds.length).toFixed(2));
+        otherIds.forEach((id, index) => {
+          if (index === otherIds.length - 1) {
+            const subtotal = equalShare * (otherIds.length - 1);
+            nextNumeric[id] = Number((remaining - subtotal).toFixed(2));
+          } else {
+            nextNumeric[id] = equalShare;
+          }
+        });
+      } else {
+        let allocated = 0;
+        otherIds.forEach((id, index) => {
+          if (index === otherIds.length - 1) {
+            nextNumeric[id] = Number((remaining - allocated).toFixed(2));
+          } else {
+            const proportional = Number((remaining * (getPayerAmount(id) / currentOtherTotal)).toFixed(2));
+            nextNumeric[id] = proportional;
+            allocated += proportional;
+          }
+        });
+      }
+    }
+
+    const nextStrings: Record<string, string> = {};
+    budgetPeople.forEach((person) => {
+      nextStrings[person.id] = String(Number((nextNumeric[person.id] || 0).toFixed(2)));
+    });
+    setPayerAmounts(nextStrings);
+  };
+
+  const rebalancePayerAmountsForNewTotal = (nextTotal: number) => {
+    if (!Number.isFinite(nextTotal) || nextTotal <= 0) return;
+
+    const currentPositive = budgetPeople
+      .map((person) => ({ personId: person.id, amount: getPayerAmount(person.id) }))
+      .filter((entry) => entry.amount > 0);
+
+    if (currentPositive.length === 0) return;
+
+    const currentTotal = currentPositive.reduce((sum, entry) => sum + entry.amount, 0);
+    if (currentTotal <= 0) return;
+
+    const nextStrings: Record<string, string> = {};
+    let allocated = 0;
+    currentPositive.forEach((entry, index) => {
+      if (index === currentPositive.length - 1) {
+        nextStrings[entry.personId] = String(Number((nextTotal - allocated).toFixed(2)));
+      } else {
+        const scaled = Number((nextTotal * (entry.amount / currentTotal)).toFixed(2));
+        nextStrings[entry.personId] = String(scaled);
+        allocated += scaled;
+      }
+    });
+
+    budgetPeople.forEach((person) => {
+      if (!(person.id in nextStrings)) nextStrings[person.id] = "0";
+    });
+
+    setPayerAmounts(nextStrings);
+  };
+
   const handleSubmit = async () => {
     if (!transaction) return;
+    if (!amount || Number.isNaN(parsedAmount) || parsedAmount <= 0) {
+      toast.error("Enter a valid amount");
+      return;
+    }
+
+    const payerBreakdown = type === "expense" ? buildExpensePayerBreakdown() : [];
+    if (type === "expense" && payerBreakdown.length === 0) {
+      toast.error("Enter at least one payer amount");
+      return;
+    }
+    if (type === "expense" && splitType === "shared_all_equal") {
+      const totalPaid = payerBreakdown.reduce((sum, entry) => sum + entry.amount, 0);
+      if (Math.abs(totalPaid - totalAmount) > 0.01) {
+        toast.error(`Payer amounts must equal ${formatCurrency(totalAmount)}`);
+        return;
+      }
+    }
+
     const parsedInterval = parseInt(recurrenceInterval, 10);
     const isTemplateTransaction = transaction.recurrenceStatus === "template" || !!transaction.isRecurring;
     const isOccurrenceLikeTransaction = !isTemplateTransaction && (
@@ -166,6 +329,11 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
         description,
         date: fromDateTimeLocalInput(date, preserveDateOnly),
         personId,
+        paidByPersonId: type === "expense"
+          ? (payerBreakdown[0]?.personId || paidByPersonId || personId)
+          : personId,
+        paidByBreakdown: type === "expense" ? payerBreakdown : null,
+        splitType: type === "expense" ? splitType : "personal",
         isRecurring: isSingleOccurrenceEdit ? false : isRecurring,
         recurrenceStatus: isRecurring
           ? (isSingleOccurrenceEdit ? "occurrence" : "template")
@@ -195,14 +363,19 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
     setLoading(false);
   };
 
-  const budgetPeople = people.filter((p) => p.budgetId === transaction?.budgetId);
-
   return (
     <Modal open={open} onClose={onClose} title="Edit Transaction">
       <div className="flex flex-col gap-4">
         <div className="flex rounded-lg overflow-hidden border border-obsidian-600">
           {(["expense", "income"] as TransactionType[]).map((t) => (
-            <button key={t} onClick={() => setType(t)}
+            <button key={t} onClick={() => {
+              setType(t);
+              if (t === "income") {
+                setSplitType("personal");
+                if (personId) setPaidByPersonId(personId);
+                setPayerAmounts({});
+              }
+            }}
               className={`flex-1 py-2 text-sm font-display font-semibold capitalize transition-all ${type === t
                 ? t === "expense" ? "bg-coral text-white" : "bg-volt text-obsidian-950"
                 : "text-white/40 hover:text-white/70"}`}>
@@ -210,10 +383,123 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
             </button>
           ))}
         </div>
-        <Input label="Amount" type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <Input label="Amount" type="number" min="0" step="0.01" value={amount} onChange={(e) => {
+          const value = e.target.value;
+          const nextTotal = Number.parseFloat(value);
+          setAmount(value);
+          if (type === "expense" && splitType === "personal") {
+            const payerId = paidByPersonId || personId;
+            if (payerId) {
+              setPayerAmounts({ [payerId]: value });
+            }
+            return;
+          }
+
+          if (type === "expense" && splitType === "shared_all_equal") {
+            rebalancePayerAmountsForNewTotal(nextTotal);
+            const payerIds = Object.keys(payerAmounts);
+            if (payerIds.length === 1) {
+              const onlyPayerId = payerIds[0];
+              setPayerAmounts({ [onlyPayerId]: value });
+            }
+          }
+        }} />
         <Select label="Category" value={category} onChange={(e) => setCategory(e.target.value as Category)} options={CATEGORIES} />
-        <Select label="Person" value={personId} onChange={(e) => setPersonId(e.target.value)}
+        <Select label="Person" value={personId} onChange={(e) => {
+          const nextPersonId = e.target.value;
+          setPersonId(nextPersonId);
+          if (type === "income" && nextPersonId) {
+            setPaidByPersonId(nextPersonId);
+          }
+        }}
           options={[{ value: "", label: "Select person..." }, ...budgetPeople.map((p) => ({ value: p.id, label: p.name }))]} />
+
+        {type === "expense" && (
+          <Select
+            label="Split type"
+            value={splitType}
+            onChange={(e) => {
+              const nextSplitType = e.target.value as SplitType;
+              setSplitType(nextSplitType);
+              if (nextSplitType === "personal") {
+                const payerId = paidByPersonId || personId;
+                if (payerId) {
+                  setPayerAmounts({ [payerId]: String(totalAmount || "") });
+                }
+              }
+            }}
+            options={[
+              { value: "shared_all_equal", label: "Shared among all members (equal share)" },
+              { value: "personal", label: "Personal (100% this person)" },
+            ]}
+          />
+        )}
+
+        {type === "expense" && splitType === "personal" && (
+          <Select
+            label="Paid by person"
+            value={paidByPersonId}
+            onChange={(e) => {
+              const payerId = e.target.value;
+              setPaidByPersonId(payerId);
+              if (payerId) {
+                setPayerAmounts({ [payerId]: String(totalAmount || "") });
+              }
+            }}
+            options={[{ value: "", label: "Select payer..." }, ...budgetPeople.map((p) => ({ value: p.id, label: p.name }))]}
+          />
+        )}
+
+        {type === "expense" && splitType === "shared_all_equal" && (
+          <div className="rounded-lg border border-obsidian-600 p-3 flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-xs text-white/50 font-body">
+                Cost share will be split equally across {budgetPeople.length} member(s).
+              </p>
+              <Button type="button" variant="ghost" size="sm" onClick={fillPaymentsEquallyAcrossAllMembers}>
+                Split payment equally
+              </Button>
+            </div>
+            <p className="text-xs text-white/40 font-body">Enter who paid and how much each person paid.</p>
+            <div className="grid grid-cols-1 gap-2">
+              {budgetPeople.map((person) => (
+                <div key={person.id} className="grid grid-cols-[1fr_140px_1fr] gap-2 items-center">
+                  <span className="text-sm text-white/70 font-body">{person.name}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={payerAmounts[person.id] || ""}
+                    onChange={(e) => setPayerAmounts((prev) => ({ ...prev, [person.id]: e.target.value }))}
+                    placeholder="0.00"
+                    className="bg-obsidian-800 border border-obsidian-600 text-white placeholder-white/20 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60"
+                  />
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={totalAmount > 0 ? Math.round((getPayerAmount(person.id) / totalAmount) * 100) : 0}
+                      onChange={(e) => rebalancePayerAmountsFromSlider(person.id, Number(e.target.value))}
+                      disabled={totalAmount <= 0}
+                      className="w-full accent-volt"
+                    />
+                    <span className="text-xs text-white/50 font-mono w-10 text-right">
+                      {totalAmount > 0 ? Math.round((getPayerAmount(person.id) / totalAmount) * 100) : 0}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs font-body text-white/40">
+              Total payer amount: <span className="text-white/70">{formatCurrency(totalPayerAmounts)}</span>
+              {Number.isFinite(parsedAmount) && parsedAmount > 0 && (
+                <span className="ml-2">(target {formatCurrency(parsedAmount)})</span>
+              )}
+            </p>
+          </div>
+        )}
         <Input label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
         <Input label="Date & Time" type="datetime-local" step="60" value={date} onChange={(e) => setDate(e.target.value)} />
         {canEditSeries && (

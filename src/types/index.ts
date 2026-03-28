@@ -1,5 +1,7 @@
 export type TransactionType = "income" | "expense";
 
+export type SplitType = "personal" | "shared_equal" | "shared_all_equal";
+
 export type RecurrenceFrequency = "minute" | "hour" | "daily" | "weekly" | "monthly" | "yearly";
 
 export type Category =
@@ -12,6 +14,9 @@ export interface Transaction {
   userId: string;
   budgetId: string;
   personId: string;
+  paidByPersonId?: string | null;
+  paidByBreakdown?: { personId: string; amount: number }[] | null;
+  splitType?: SplitType | null;
   type: TransactionType;
   amount: number;
   category: Category;

@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, CreditCard, Users, PieChart, LogOut, ChevronDown, Plus } from "lucide-react";
+import { LayoutDashboard, CreditCard, Users, PieChart, CircleHelp, LogOut, ChevronDown, Plus } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useApp } from "@/context/AppContext";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,7 @@ const NAV = [
   { href: "/transactions", label: "Transactions", icon: CreditCard },
   { href: "/people", label: "People", icon: Users },
   { href: "/budget", label: "Budget", icon: PieChart },
+  { href: "/help", label: "Help", icon: CircleHelp },
 ];
 
 export function Sidebar() {
