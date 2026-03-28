@@ -47,6 +47,7 @@ export function AddTransactionModal({ open, onClose }: Props) {
   const [recurrenceInterval, setRecurrenceInterval] = useState("1");
   const [recurrenceEndDate, setRecurrenceEndDate] = useState("");
   const [loading, setLoading] = useState(false);
+  const [autoSplitEqually, setAutoSplitEqually] = useState(true);
 
   const budgetPeople = people.filter((p) => p.budgetId === activeBudget?.id);
   const parsedAmount = Number.parseFloat(amount);
@@ -89,7 +90,6 @@ export function AddTransactionModal({ open, onClose }: Props) {
       toast.error("Enter amount first");
       return;
     }
-
     const equalShare = Number((parsedAmount / budgetPeople.length).toFixed(2));
     const next: Record<string, string> = {};
     budgetPeople.forEach((person, index) => {
@@ -102,6 +102,26 @@ export function AddTransactionModal({ open, onClose }: Props) {
     });
     setPayerAmounts(next);
   };
+
+  // Auto split equally effect
+  useMemo(() => {
+    if (autoSplitEqually && type === "expense" && splitType === "shared_all_equal") {
+      if (budgetPeople.length === 0) return;
+      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return;
+      const equalShare = Number((parsedAmount / budgetPeople.length).toFixed(2));
+      const next: Record<string, string> = {};
+      budgetPeople.forEach((person, index) => {
+        if (index === budgetPeople.length - 1) {
+          const subtotal = equalShare * (budgetPeople.length - 1);
+          next[person.id] = String(Number((parsedAmount - subtotal).toFixed(2)));
+        } else {
+          next[person.id] = String(equalShare);
+        }
+      });
+      setPayerAmounts(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSplitEqually, parsedAmount, budgetPeople.length, type, splitType]);
 
   const applySharedGroupPreset = () => {
     if (budgetPeople.length < 2) {
@@ -372,14 +392,15 @@ export function AddTransactionModal({ open, onClose }: Props) {
             onChange={(e) => {
               const nextSplitType = e.target.value as SplitType;
               setSplitType(nextSplitType);
-
               if (nextSplitType === "personal") {
+                setAutoSplitEqually(false);
                 const payerId = paidByPersonId || getPartnerId(personId) || personId;
                 setPaidByPersonId(payerId);
                 if (payerId) {
                   setPayerAmounts({ [payerId]: String(totalAmount || "") });
                 }
               } else if (nextSplitType === "shared_all_equal") {
+                setAutoSplitEqually(true);
                 const payerId = paidByPersonId || getPartnerId(personId) || personId;
                 if (payerId && totalAmount > 0) {
                   setPayerAmounts({ [payerId]: String(totalAmount) });
@@ -418,6 +439,18 @@ export function AddTransactionModal({ open, onClose }: Props) {
                 Split payment equally
               </Button>
             </div>
+            <div className="flex items-center gap-2 mb-2">
+              <input
+                id="auto-split-equally"
+                type="checkbox"
+                checked={autoSplitEqually}
+                onChange={() => setAutoSplitEqually((v) => !v)}
+                className="accent-volt"
+              />
+              <label htmlFor="auto-split-equally" className="text-xs text-white/70 font-body cursor-pointer select-none">
+                Auto split equally
+              </label>
+            </div>
             <p className="text-xs text-white/40 font-body">
               Enter who paid and how much each person paid.
             </p>
@@ -431,6 +464,7 @@ export function AddTransactionModal({ open, onClose }: Props) {
                     step="0.01"
                     value={payerAmounts[person.id] || ""}
                     onChange={(e) => {
+                      if (autoSplitEqually) return;
                       const inputValue = e.target.value;
                       const numericValue = Number.parseFloat(inputValue);
                       if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
@@ -477,6 +511,7 @@ export function AddTransactionModal({ open, onClose }: Props) {
                     }}
                     placeholder="0.00"
                     className="bg-obsidian-800 border border-obsidian-600 text-white placeholder-white/20 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60"
+                    disabled={autoSplitEqually}
                   />
                   <div className="flex items-center gap-2">
                     <input
@@ -485,8 +520,8 @@ export function AddTransactionModal({ open, onClose }: Props) {
                       max="100"
                       step="1"
                       value={totalAmount > 0 ? Math.round((getPayerAmount(person.id) / totalAmount) * 100) : 0}
-                      onChange={(e) => rebalancePayerAmountsFromSlider(person.id, Number(e.target.value))}
-                      disabled={totalAmount <= 0}
+                      onChange={(e) => { if (!autoSplitEqually) rebalancePayerAmountsFromSlider(person.id, Number(e.target.value)); }}
+                      disabled={totalAmount <= 0 || autoSplitEqually}
                       className="w-full accent-volt"
                     />
                     <span className="text-xs text-white/50 font-mono w-10 text-right">
