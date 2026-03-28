@@ -470,7 +470,51 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
                     min="0"
                     step="0.01"
                     value={payerAmounts[person.id] || ""}
-                    onChange={(e) => setPayerAmounts((prev) => ({ ...prev, [person.id]: e.target.value }))}
+                    onChange={(e) => {
+                      const inputValue = e.target.value;
+                      const numericValue = Number.parseFloat(inputValue);
+                      if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+                        toast.error("Enter amount first");
+                        setPayerAmounts((prev) => ({ ...prev, [person.id]: inputValue }));
+                        return;
+                      }
+                      // Clamp to total
+                      const clamped = Math.max(0, Math.min(parsedAmount, numericValue));
+                      // Rebalance others
+                      const otherIds = budgetPeople.map((p) => p.id).filter((id) => id !== person.id);
+                      const remaining = Number((parsedAmount - clamped).toFixed(2));
+                      let nextNumeric: Record<string, number> = { [person.id]: clamped };
+                      if (otherIds.length > 0) {
+                        const currentOtherTotal = otherIds.reduce((sum, id) => sum + getPayerAmount(id), 0);
+                        if (currentOtherTotal <= 0) {
+                          const equalShare = Number((remaining / otherIds.length).toFixed(2));
+                          otherIds.forEach((id, idx) => {
+                            if (idx === otherIds.length - 1) {
+                              const subtotal = equalShare * (otherIds.length - 1);
+                              nextNumeric[id] = Number((remaining - subtotal).toFixed(2));
+                            } else {
+                              nextNumeric[id] = equalShare;
+                            }
+                          });
+                        } else {
+                          let allocated = 0;
+                          otherIds.forEach((id, idx) => {
+                            if (idx === otherIds.length - 1) {
+                              nextNumeric[id] = Number((remaining - allocated).toFixed(2));
+                            } else {
+                              const proportional = Number((remaining * (getPayerAmount(id) / currentOtherTotal)).toFixed(2));
+                              nextNumeric[id] = proportional;
+                              allocated += proportional;
+                            }
+                          });
+                        }
+                      }
+                      const nextStrings: Record<string, string> = {};
+                      budgetPeople.forEach((p) => {
+                        nextStrings[p.id] = String(Number((nextNumeric[p.id] || 0).toFixed(2)));
+                      });
+                      setPayerAmounts(nextStrings);
+                    }}
                     placeholder="0.00"
                     className="bg-obsidian-800 border border-obsidian-600 text-white placeholder-white/20 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60"
                   />
