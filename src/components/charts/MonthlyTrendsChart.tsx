@@ -1,5 +1,5 @@
 "use client";
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { ComposedChart, Area, Line, ReferenceLine, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import type { MonthlyData } from "@/types";
 import { formatCurrency } from "@/lib/utils";
 import { Card } from "@/components/ui/Card";
@@ -25,7 +25,7 @@ export function MonthlyTrendsChart({ data }: Props) {
     <Card className="p-5">
       <h3 className="font-display font-bold text-white mb-5 text-sm uppercase tracking-wider">Monthly Trends</h3>
       <ResponsiveContainer width="100%" height={240}>
-        <AreaChart data={data} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
+        <ComposedChart data={data} margin={{ top: 5, right: 5, bottom: 5, left: 5 }}>
           <defs>
             <linearGradient id="gIncome" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#c8ff00" stopOpacity={0.2} />
@@ -41,9 +41,20 @@ export function MonthlyTrendsChart({ data }: Props) {
           <YAxis tick={{ fill: "#ffffff40", fontSize: 11, fontFamily: "DM Sans" }} axisLine={false} tickLine={false}
             tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
           <Tooltip content={<CustomTooltip />} />
+          <Legend wrapperStyle={{ color: "#ffffff66", fontSize: 11 }} />
+          <ReferenceLine y={0} stroke="#ffffff26" strokeDasharray="4 4" />
           <Area type="monotone" dataKey="income" name="Income" stroke="#c8ff00" strokeWidth={2} fill="url(#gIncome)" />
           <Area type="monotone" dataKey="expenses" name="Expenses" stroke="#ff6b6b" strokeWidth={2} fill="url(#gExpense)" />
-        </AreaChart>
+          <Line
+            type="monotone"
+            dataKey="net"
+            name="Net"
+            stroke="#00d4ff"
+            strokeWidth={2.2}
+            dot={{ r: 2 }}
+            activeDot={{ r: 4 }}
+          />
+        </ComposedChart>
       </ResponsiveContainer>
     </Card>
   );

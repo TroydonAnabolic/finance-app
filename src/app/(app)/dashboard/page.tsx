@@ -11,7 +11,7 @@ import {
   getWeeklySummary, getFortnightlySummary, getMonthlySummary, getYearlySummary,
   getCategoryBreakdown, getMonthlyTrends, getPersonContributions, formatCurrency,
 } from "@/lib/utils";
-import { TrendingUp, TrendingDown, Activity, Plus, RefreshCw } from "lucide-react";
+import { TrendingUp, TrendingDown, Activity, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Period = "weekly" | "fortnightly" | "monthly" | "yearly";
@@ -22,6 +22,11 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<Period>("monthly");
   const [addOpen, setAddOpen] = useState(false);
 
+  const parseDate = (value: string): Date | null => {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
   const budgetTransactions = useMemo(() =>
     activeBudget ? transactions.filter((t) => t.budgetId === activeBudget.id) : [],
     [transactions, activeBudget]
@@ -31,16 +36,29 @@ export default function DashboardPage() {
     [people, activeBudget]
   );
 
-  const summary = useMemo(() => {
-    if (period === "weekly") return getWeeklySummary(budgetTransactions);
-    if (period === "fortnightly") return getFortnightlySummary(budgetTransactions);
-    if (period === "monthly") return getMonthlySummary(budgetTransactions);
-    return getYearlySummary(budgetTransactions);
-  }, [budgetTransactions, period]);
+  const completedBudgetTransactions = useMemo(() => {
+    const now = new Date();
+    return budgetTransactions.filter((t) => {
+      if (t.recurrenceStatus === "template" || !!t.isRecurring) return false;
+      const dt = parseDate(t.date);
+      if (!dt) return true;
+      return dt.getTime() <= now.getTime();
+    });
+  }, [budgetTransactions]);
 
-  const categoryData = useMemo(() => getCategoryBreakdown(budgetTransactions), [budgetTransactions]);
-  const monthlyData = useMemo(() => getMonthlyTrends(budgetTransactions), [budgetTransactions]);
-  const contributions = useMemo(() => getPersonContributions(budgetTransactions, budgetPeople), [budgetTransactions, budgetPeople]);
+  const summary = useMemo(() => {
+    if (period === "weekly") return getWeeklySummary(completedBudgetTransactions);
+    if (period === "fortnightly") return getFortnightlySummary(completedBudgetTransactions);
+    if (period === "monthly") return getMonthlySummary(completedBudgetTransactions);
+    return getYearlySummary(completedBudgetTransactions);
+  }, [completedBudgetTransactions, period]);
+
+  const categoryData = useMemo(() => getCategoryBreakdown(completedBudgetTransactions), [completedBudgetTransactions]);
+  const monthlyData = useMemo(() => getMonthlyTrends(completedBudgetTransactions), [completedBudgetTransactions]);
+  const contributions = useMemo(
+    () => getPersonContributions(completedBudgetTransactions, budgetPeople),
+    [completedBudgetTransactions, budgetPeople],
+  );
 
   return (
     <div className="p-6 lg:p-8 flex flex-col gap-6 min-h-screen">
@@ -51,7 +69,7 @@ export default function DashboardPage() {
             {activeBudget?.name || "Overview"}
           </h1>
           <p className="text-white/40 font-body text-sm mt-0.5">
-            {loading ? "Loading..." : `${budgetTransactions.length} transactions · ${budgetPeople.length} people`}
+            {loading ? "Loading..." : `${completedBudgetTransactions.length} completed transactions · ${budgetPeople.length} people`}
           </p>
         </div>
         <Button onClick={() => setAddOpen(true)} size="sm">
@@ -71,7 +89,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div key={period} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <StatCard label="Income" value={summary.income} icon={TrendingUp} type="income" />
         <StatCard label="Expenses" value={summary.expenses} icon={TrendingDown} type="expense" />
         <StatCard label="Net" value={summary.net} icon={Activity} type="net" />
