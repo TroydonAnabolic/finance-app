@@ -32,6 +32,8 @@ type ContributionRow = {
   percentage: number;
 };
 
+type RecurrenceFrequency = NonNullable<NonNullable<Transaction["recurrence"]>["frequency"]>;
+
 function getMonthKey(value: Date): string {
   const yyyy = value.getFullYear();
   const mm = String(value.getMonth() + 1).padStart(2, "0");
@@ -113,6 +115,79 @@ function countMonthlyOccurrencesBetween(
   }
 
   return count;
+}
+
+function addToRecurringDate(date: Date, frequency: RecurrenceFrequency, interval: number): Date {
+  const next = new Date(date);
+  switch (frequency) {
+    case "minute":
+      next.setMinutes(next.getMinutes() + interval);
+      break;
+    case "hour":
+      next.setHours(next.getHours() + interval);
+      break;
+    case "daily":
+      next.setDate(next.getDate() + interval);
+      break;
+    case "weekly":
+      next.setDate(next.getDate() + interval * 7);
+      break;
+    case "monthly":
+      next.setMonth(next.getMonth() + interval);
+      break;
+    case "yearly":
+      next.setFullYear(next.getFullYear() + interval);
+      break;
+    default:
+      break;
+  }
+  return next;
+}
+
+function toRecurringStoredDateValue(nextDate: Date, frequency: RecurrenceFrequency): string {
+  if (frequency === "minute" || frequency === "hour") {
+    return nextDate.toISOString();
+  }
+  return nextDate.toISOString().slice(0, 10);
+}
+
+function isRecurringTemplate(tx: Transaction): boolean {
+  return tx.recurrenceStatus === "template" || !!tx.isRecurring;
+}
+
+function isRecurringOccurrenceLike(tx: Transaction): boolean {
+  return tx.recurrenceStatus === "occurrence" || !!tx.recurrenceSourceId;
+}
+
+function belongsToTemplate(candidate: Transaction, template: Transaction): boolean {
+  if (candidate.id === template.id) return false;
+  if (candidate.recurrenceSourceId) {
+    return candidate.recurrenceSourceId === template.id;
+  }
+  const templateGroupId = template.recurrenceGroupId || template.id;
+  return !!candidate.recurrenceGroupId && candidate.recurrenceGroupId === templateGroupId;
+}
+
+function calculatePairDebtDelta(
+  tx: Transaction,
+  budgetMemberIds: string[],
+  debtorId: string,
+  creditorId: string,
+): number {
+  if (tx.type !== "expense") return 0;
+
+  const shares = getExpenseShares(tx, budgetMemberIds);
+  const contributions = getPaymentContributions(tx);
+
+  const debtorShare = shares[debtorId] || 0;
+  const creditorShare = shares[creditorId] || 0;
+  const debtorContribution = contributions[debtorId] || 0;
+  const creditorContribution = contributions[creditorId] || 0;
+
+  const debtorOwesCreditorFromTx = Math.min(creditorContribution, debtorShare);
+  const creditorOwesDebtorFromTx = Math.min(debtorContribution, creditorShare);
+
+  return debtorOwesCreditorFromTx - creditorOwesDebtorFromTx;
 }
 
 function getExpenseShares(tx: Transaction, budgetMemberIds: string[]): Record<string, number> {
@@ -450,19 +525,7 @@ export default function PeoplePage() {
     if (!debtConfig.debtorId || !debtConfig.creditorId) return 0;
     const memberIds = budgetPeople.map((p) => p.id);
     return completedBudgetTransactions.reduce((sum, tx) => {
-      if (tx.type !== "expense") return sum;
-      const shares = getExpenseShares(tx, memberIds);
-      const contributions = getPaymentContributions(tx);
-
-      const debtorShare = shares[debtConfig.debtorId] || 0;
-      const creditorShare = shares[debtConfig.creditorId] || 0;
-      const debtorContribution = contributions[debtConfig.debtorId] || 0;
-      const creditorContribution = contributions[debtConfig.creditorId] || 0;
-
-      const debtorOwesCreditorFromTx = Math.min(creditorContribution, debtorShare);
-      const creditorOwesDebtorFromTx = Math.min(debtorContribution, creditorShare);
-
-      return sum + debtorOwesCreditorFromTx - creditorOwesDebtorFromTx;
+      return sum + calculatePairDebtDelta(tx, memberIds, debtConfig.debtorId, debtConfig.creditorId);
     }, 0);
   }, [completedBudgetTransactions, debtConfig.debtorId, debtConfig.creditorId, budgetPeople]);
 
@@ -477,17 +540,7 @@ export default function PeoplePage() {
       const txDate = parseDate(tx.date);
       if (!txDate) return;
 
-      const shares = getExpenseShares(tx, memberIds);
-      const contributions = getPaymentContributions(tx);
-
-      const debtorShare = shares[debtConfig.debtorId] || 0;
-      const creditorShare = shares[debtConfig.creditorId] || 0;
-      const debtorContribution = contributions[debtConfig.debtorId] || 0;
-      const creditorContribution = contributions[debtConfig.creditorId] || 0;
-
-      const debtorOwesCreditorFromTx = Math.min(creditorContribution, debtorShare);
-      const creditorOwesDebtorFromTx = Math.min(debtorContribution, creditorShare);
-      const txDebtDelta = debtorOwesCreditorFromTx - creditorOwesDebtorFromTx;
+      const txDebtDelta = calculatePairDebtDelta(tx, memberIds, debtConfig.debtorId, debtConfig.creditorId);
 
       const monthKey = getMonthKey(txDate);
       monthly[monthKey] = (monthly[monthKey] || 0) + txDebtDelta;
@@ -566,6 +619,91 @@ export default function PeoplePage() {
     if (diffMs <= 0) return 0;
     return diffMs / (1000 * 60 * 60 * 24 * 30.4375);
   }, [projectionTargetEndOfDay]);
+  const projectedRecurringIouIncrease = useMemo(() => {
+    if (!projectionTargetEndOfDay || !debtConfig.debtorId || !debtConfig.creditorId) return 0;
+
+    const now = new Date();
+    if (projectionTargetEndOfDay.getTime() <= now.getTime()) return 0;
+
+    const memberIds = budgetPeople.map((p) => p.id);
+    const templates = budgetTransactions.filter((tx) => isRecurringTemplate(tx) && !!tx.recurrence?.frequency);
+    let projectedDelta = 0;
+
+    templates.forEach((template) => {
+      const recurrence = template.recurrence;
+      if (!recurrence?.frequency) return;
+
+      const interval = Number.parseInt(String(recurrence.interval), 10);
+      if (Number.isNaN(interval) || interval < 1) return;
+
+      const templateDate = parseDate(template.date);
+      if (!templateDate) return;
+
+      const endDate = recurrence.endsOn ? parseDate(recurrence.endsOn) : null;
+      const existingSeriesOccurrences = budgetTransactions.filter(
+        (tx) => isRecurringOccurrenceLike(tx) && belongsToTemplate(tx, template),
+      );
+
+      const existingOccurrenceDates = new Set<string>();
+      existingSeriesOccurrences.forEach((occurrence) => {
+        if (occurrence.date) {
+          existingOccurrenceDates.add(occurrence.date);
+        }
+
+        const occurrenceDate = parseDate(occurrence.date);
+        if (!occurrenceDate) return;
+        if (occurrenceDate.getTime() <= now.getTime()) return;
+        if (occurrenceDate.getTime() > projectionTargetEndOfDay.getTime()) return;
+
+        projectedDelta += calculatePairDebtDelta(
+          occurrence,
+          memberIds,
+          debtConfig.debtorId,
+          debtConfig.creditorId,
+        );
+      });
+
+      const recurrenceGroupId = template.recurrenceGroupId || template.id;
+      let cursorDate = new Date(templateDate);
+      let guard = 0;
+      while (guard < 50000) {
+        const nextDueDate = addToRecurringDate(cursorDate, recurrence.frequency, interval);
+        cursorDate = nextDueDate;
+        guard += 1;
+
+        if (endDate && nextDueDate.getTime() > endDate.getTime()) break;
+        if (nextDueDate.getTime() > projectionTargetEndOfDay.getTime()) break;
+        if (nextDueDate.getTime() <= now.getTime()) continue;
+
+        const dueDateValue = toRecurringStoredDateValue(nextDueDate, recurrence.frequency);
+        if (existingOccurrenceDates.has(dueDateValue)) continue;
+
+        const syntheticOccurrence: Transaction = {
+          ...template,
+          date: dueDateValue,
+          isRecurring: false,
+          recurrenceStatus: "occurrence",
+          recurrenceGroupId,
+          recurrenceSourceId: template.id,
+        };
+
+        projectedDelta += calculatePairDebtDelta(
+          syntheticOccurrence,
+          memberIds,
+          debtConfig.debtorId,
+          debtConfig.creditorId,
+        );
+      }
+    });
+
+    return projectedDelta;
+  }, [
+    projectionTargetEndOfDay,
+    debtConfig.debtorId,
+    debtConfig.creditorId,
+    budgetPeople,
+    budgetTransactions,
+  ]);
   const projectedAutoRepayments = useMemo(() => {
     if (!debtConfig.autoRepaymentEnabled || autoRepaymentAmount <= 0 || !autoRepaymentStartDate || !projectionTargetEndOfDay) {
       return 0;
@@ -579,8 +717,8 @@ export default function PeoplePage() {
     projectionTargetEndOfDay,
   ]);
   const projectedIouIncrease = useMemo(
-    () => (estimatedMonthlyIouIncrease * projectionMonthsAway) - projectedAutoRepayments,
-    [estimatedMonthlyIouIncrease, projectionMonthsAway, projectedAutoRepayments],
+    () => projectedRecurringIouIncrease - projectedAutoRepayments,
+    [projectedRecurringIouIncrease, projectedAutoRepayments],
   );
   const projectedCumulativeIou = useMemo(() => cumulativeIou + projectedIouIncrease, [cumulativeIou, projectedIouIncrease]);
 
@@ -821,7 +959,7 @@ export default function PeoplePage() {
             <div>
               <p className="text-sm font-display font-semibold text-white">IOU Projection</p>
               <p className="text-xs text-white/40 font-body mt-0.5">
-                Estimate how much will be owed by a future date if this trend continues, net of auto repayments.
+                Projects scheduled recurring expenses through the target date, net of auto repayments.
               </p>
             </div>
 
@@ -833,7 +971,7 @@ export default function PeoplePage() {
                 onChange={(e) => setProjectionDateInput(e.target.value)}
               />
               <p className="text-xs text-white/45 font-body">
-                Uses estimated monthly IOU increase from recent months and extends it to your target date.
+                Uses recurring templates plus generated future recurring occurrences through your target date.
               </p>
             </div>
 
@@ -855,6 +993,9 @@ export default function PeoplePage() {
                 <p className="text-base font-mono font-semibold text-volt">{formatCurrency(projectedCumulativeIou)}</p>
               </div>
             </div>
+            <p className="text-[11px] text-white/35 font-body">
+              Scheduled recurring IOU to target: {projectedRecurringIouIncrease >= 0 ? "+" : "-"}{formatCurrency(Math.abs(projectedRecurringIouIncrease))}
+            </p>
             <p className="text-[11px] text-white/35 font-body">
               Auto repayments to target: -{formatCurrency(projectedAutoRepayments)}
             </p>
