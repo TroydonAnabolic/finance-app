@@ -13,10 +13,15 @@ import { Select } from "@/components/ui/Select";
 import { Modal } from "@/components/ui/Modal";
 import toast from "react-hot-toast";
 
+const DEFAULT_AUTO_REPAYMENT_AMOUNT = 0.00;
+
 type DebtTrackerConfig = {
   debtorId: string;
   creditorId: string;
   openingDebt: number;
+  autoRepaymentEnabled: boolean;
+  autoRepaymentAmount: number;
+  autoRepaymentStartDate: string;
 };
 
 type ContributionRow = {
@@ -38,10 +43,76 @@ function parseAmount(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function toDateInputValue(value: Date): string {
+  const yyyy = value.getFullYear();
+  const mm = String(value.getMonth() + 1).padStart(2, "0");
+  const dd = String(value.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
 function parseDate(value: string): Date | null {
   if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [year, month, day] = value.split("-").map((part) => Number(part));
+    const parsedLocal = new Date(year, month - 1, day);
+    return Number.isNaN(parsedLocal.getTime()) ? null : parsedLocal;
+  }
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function addMonthsKeepingDay(date: Date, months: number, anchorDay: number): Date {
+  const targetMonthStart = new Date(
+    date.getFullYear(),
+    date.getMonth() + months,
+    1,
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds(),
+  );
+  const lastDayOfMonth = new Date(
+    targetMonthStart.getFullYear(),
+    targetMonthStart.getMonth() + 1,
+    0,
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds(),
+  ).getDate();
+  const normalizedDay = Math.max(1, Math.min(anchorDay, lastDayOfMonth));
+  return new Date(
+    targetMonthStart.getFullYear(),
+    targetMonthStart.getMonth(),
+    normalizedDay,
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds(),
+  );
+}
+
+function countMonthlyOccurrencesBetween(
+  startDate: Date | null,
+  rangeStartExclusive: Date | null,
+  rangeEndInclusive: Date | null,
+): number {
+  if (!startDate || !rangeEndInclusive) return 0;
+  if (startDate.getTime() > rangeEndInclusive.getTime()) return 0;
+
+  const anchorDay = startDate.getDate();
+  let count = 0;
+  let cursor = new Date(startDate);
+  let guard = 0;
+  while (guard < 5000 && cursor.getTime() <= rangeEndInclusive.getTime()) {
+    if (!rangeStartExclusive || cursor.getTime() > rangeStartExclusive.getTime()) {
+      count += 1;
+    }
+    cursor = addMonthsKeepingDay(cursor, 1, anchorDay);
+    guard += 1;
+  }
+
+  return count;
 }
 
 function getExpenseShares(tx: Transaction, budgetMemberIds: string[]): Record<string, number> {
@@ -141,9 +212,18 @@ export default function PeoplePage() {
   const { people, transactions, budgets, activeBudget, removePerson } = useApp();
   const [addOpen, setAddOpen] = useState(false);
   const [editPerson, setEditPerson] = useState<Person | null>(null);
-  const [debtConfig, setDebtConfig] = useState<DebtTrackerConfig>({ debtorId: "", creditorId: "", openingDebt: 0 });
+  const [debtConfig, setDebtConfig] = useState<DebtTrackerConfig>({
+    debtorId: "",
+    creditorId: "",
+    openingDebt: 0,
+    autoRepaymentEnabled: true,
+    autoRepaymentAmount: DEFAULT_AUTO_REPAYMENT_AMOUNT,
+    autoRepaymentStartDate: toDateInputValue(new Date()),
+  });
   const [openingDebtInput, setOpeningDebtInput] = useState("0");
   const [repaymentInput, setRepaymentInput] = useState("");
+  const [autoRepaymentAmountInput, setAutoRepaymentAmountInput] = useState(String(DEFAULT_AUTO_REPAYMENT_AMOUNT));
+  const [autoRepaymentStartDateInput, setAutoRepaymentStartDateInput] = useState(toDateInputValue(new Date()));
   const [debtConfigHydrated, setDebtConfigHydrated] = useState(false);
   const [cashAssetBaseByPerson, setCashAssetBaseByPerson] = useState<Record<string, number>>({});
   const [cashAssetsHydrated, setCashAssetsHydrated] = useState(false);
@@ -174,13 +254,23 @@ export default function PeoplePage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const defaultStartDate = toDateInputValue(new Date());
     const raw = window.localStorage.getItem(configStorageKey);
     if (!raw) {
       const fallbackDebtor = budgetPeople[0]?.id || "";
       const fallbackCreditor = budgetPeople.find((p) => p.id !== fallbackDebtor)?.id || "";
-      const defaultConfig = { debtorId: fallbackDebtor, creditorId: fallbackCreditor, openingDebt: 0 };
+      const defaultConfig: DebtTrackerConfig = {
+        debtorId: fallbackDebtor,
+        creditorId: fallbackCreditor,
+        openingDebt: 0,
+        autoRepaymentEnabled: true,
+        autoRepaymentAmount: DEFAULT_AUTO_REPAYMENT_AMOUNT,
+        autoRepaymentStartDate: defaultStartDate,
+      };
       setDebtConfig(defaultConfig);
       setOpeningDebtInput("0");
+      setAutoRepaymentAmountInput(String(DEFAULT_AUTO_REPAYMENT_AMOUNT));
+      setAutoRepaymentStartDateInput(defaultStartDate);
       setDebtConfigHydrated(true);
       return;
     }
@@ -194,14 +284,43 @@ export default function PeoplePage() {
         ? parsed.creditorId
         : (budgetPeople.find((p) => p.id !== debtorId)?.id || "");
       const openingDebt = Number.isFinite(Number(parsed.openingDebt)) ? Number(parsed.openingDebt) : 0;
-      setDebtConfig({ debtorId, creditorId, openingDebt });
+      const autoRepaymentAmount = Number.isFinite(Number(parsed.autoRepaymentAmount))
+        ? Math.max(0, Number(parsed.autoRepaymentAmount))
+        : DEFAULT_AUTO_REPAYMENT_AMOUNT;
+      const parsedAutoRepaymentStartDate = typeof parsed.autoRepaymentStartDate === "string"
+        ? parseDate(parsed.autoRepaymentStartDate)
+        : null;
+      const autoRepaymentStartDate = parsedAutoRepaymentStartDate
+        ? toDateInputValue(parsedAutoRepaymentStartDate)
+        : defaultStartDate;
+      const autoRepaymentEnabled = parsed.autoRepaymentEnabled !== false;
+
+      setDebtConfig({
+        debtorId,
+        creditorId,
+        openingDebt,
+        autoRepaymentEnabled,
+        autoRepaymentAmount,
+        autoRepaymentStartDate,
+      });
       setOpeningDebtInput(String(openingDebt));
+      setAutoRepaymentAmountInput(String(autoRepaymentAmount));
+      setAutoRepaymentStartDateInput(autoRepaymentStartDate);
       setDebtConfigHydrated(true);
     } catch {
       const fallbackDebtor = budgetPeople[0]?.id || "";
       const fallbackCreditor = budgetPeople.find((p) => p.id !== fallbackDebtor)?.id || "";
-      setDebtConfig({ debtorId: fallbackDebtor, creditorId: fallbackCreditor, openingDebt: 0 });
+      setDebtConfig({
+        debtorId: fallbackDebtor,
+        creditorId: fallbackCreditor,
+        openingDebt: 0,
+        autoRepaymentEnabled: true,
+        autoRepaymentAmount: DEFAULT_AUTO_REPAYMENT_AMOUNT,
+        autoRepaymentStartDate: defaultStartDate,
+      });
       setOpeningDebtInput("0");
+      setAutoRepaymentAmountInput(String(DEFAULT_AUTO_REPAYMENT_AMOUNT));
+      setAutoRepaymentStartDateInput(defaultStartDate);
       setDebtConfigHydrated(true);
     }
   }, [configStorageKey, budgetPeople]);
@@ -392,21 +511,77 @@ export default function PeoplePage() {
     return totalRecent / recentMonthKeys.length;
   }, [debtDeltaByMonth]);
 
-  const owedTotal = useMemo(() => debtConfig.openingDebt + debtDeltaFromTransactions, [debtConfig.openingDebt, debtDeltaFromTransactions]);
+  const autoRepaymentAmount = useMemo(() => {
+    const parsed = Number(debtConfig.autoRepaymentAmount);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return parsed;
+  }, [debtConfig.autoRepaymentAmount]);
+
+  const autoRepaymentStartDate = useMemo(
+    () => parseDate(debtConfig.autoRepaymentStartDate),
+    [debtConfig.autoRepaymentStartDate],
+  );
+
+  const autoRepaymentsAppliedToDate = useMemo(() => {
+    if (!debtConfig.autoRepaymentEnabled || autoRepaymentAmount <= 0 || !autoRepaymentStartDate) return 0;
+    const count = countMonthlyOccurrencesBetween(autoRepaymentStartDate, null, new Date());
+    return count * autoRepaymentAmount;
+  }, [debtConfig.autoRepaymentEnabled, autoRepaymentAmount, autoRepaymentStartDate]);
+
+  const autoRepaymentsThisMonth = useMemo(() => {
+    if (!debtConfig.autoRepaymentEnabled || autoRepaymentAmount <= 0 || !autoRepaymentStartDate) return 0;
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    const count = countMonthlyOccurrencesBetween(
+      autoRepaymentStartDate,
+      new Date(startOfMonth.getTime() - 1),
+      now,
+    );
+    return count * autoRepaymentAmount;
+  }, [debtConfig.autoRepaymentEnabled, autoRepaymentAmount, autoRepaymentStartDate]);
+
+  const currentMonthNetIouChange = useMemo(
+    () => currentMonthIouIncrease - autoRepaymentsThisMonth,
+    [currentMonthIouIncrease, autoRepaymentsThisMonth],
+  );
+
+  const owedTotal = useMemo(
+    () => debtConfig.openingDebt + debtDeltaFromTransactions - autoRepaymentsAppliedToDate,
+    [debtConfig.openingDebt, debtDeltaFromTransactions, autoRepaymentsAppliedToDate],
+  );
   const cumulativeIou = useMemo(() => owedTotal, [owedTotal]);
   const equalizationGap = useMemo(() => creditorExpenses - debtorExpenses, [creditorExpenses, debtorExpenses]);
 
   const projectionTargetDate = useMemo(() => parseDate(projectionDateInput), [projectionDateInput]);
+  const projectionTargetEndOfDay = useMemo(() => {
+    if (!projectionTargetDate) return null;
+    const endOfDay = new Date(projectionTargetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+    return endOfDay;
+  }, [projectionTargetDate]);
   const projectionMonthsAway = useMemo(() => {
-    if (!projectionTargetDate) return 0;
+    if (!projectionTargetEndOfDay) return 0;
     const now = new Date();
-    const targetEndOfDay = new Date(projectionTargetDate);
-    targetEndOfDay.setHours(23, 59, 59, 999);
-    const diffMs = targetEndOfDay.getTime() - now.getTime();
+    const diffMs = projectionTargetEndOfDay.getTime() - now.getTime();
     if (diffMs <= 0) return 0;
     return diffMs / (1000 * 60 * 60 * 24 * 30.4375);
-  }, [projectionTargetDate]);
-  const projectedIouIncrease = useMemo(() => estimatedMonthlyIouIncrease * projectionMonthsAway, [estimatedMonthlyIouIncrease, projectionMonthsAway]);
+  }, [projectionTargetEndOfDay]);
+  const projectedAutoRepayments = useMemo(() => {
+    if (!debtConfig.autoRepaymentEnabled || autoRepaymentAmount <= 0 || !autoRepaymentStartDate || !projectionTargetEndOfDay) {
+      return 0;
+    }
+    const count = countMonthlyOccurrencesBetween(autoRepaymentStartDate, new Date(), projectionTargetEndOfDay);
+    return count * autoRepaymentAmount;
+  }, [
+    debtConfig.autoRepaymentEnabled,
+    autoRepaymentAmount,
+    autoRepaymentStartDate,
+    projectionTargetEndOfDay,
+  ]);
+  const projectedIouIncrease = useMemo(
+    () => (estimatedMonthlyIouIncrease * projectionMonthsAway) - projectedAutoRepayments,
+    [estimatedMonthlyIouIncrease, projectionMonthsAway, projectedAutoRepayments],
+  );
   const projectedCumulativeIou = useMemo(() => cumulativeIou + projectedIouIncrease, [cumulativeIou, projectedIouIncrease]);
 
   const debtPeopleOptions = budgetPeople.map((p) => ({ value: p.id, label: p.name }));
@@ -439,6 +614,25 @@ export default function PeoplePage() {
     });
     setRepaymentInput("");
     toast.success("Repayment applied to debt");
+  };
+
+  const applyAutoRepayment = () => {
+    const amount = parseAmount(autoRepaymentAmountInput);
+    if (amount <= 0) {
+      toast.error("Auto repayment amount must be greater than 0");
+      return;
+    }
+    if (!autoRepaymentStartDateInput) {
+      toast.error("Select an auto repayment start date");
+      return;
+    }
+
+    setDebtConfig((prev) => ({
+      ...prev,
+      autoRepaymentAmount: amount,
+      autoRepaymentStartDate: autoRepaymentStartDateInput,
+    }));
+    toast.success("Auto repayment settings saved");
   };
 
   const handleDelete = async (id: string) => {
@@ -520,7 +714,7 @@ export default function PeoplePage() {
             <Button variant="secondary" size="sm" onClick={applyOpeningDebt}>Save Starting Debt</Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-3">
             <div className="bg-obsidian-900 rounded-lg p-3 border border-obsidian-700/70">
               <p className="text-xs font-body text-white/40 mb-1">Starting debt</p>
               <p className="text-base font-mono font-semibold text-white">{formatCurrency(debtConfig.openingDebt)}</p>
@@ -534,9 +728,9 @@ export default function PeoplePage() {
               </p>
             </div>
             <div className="bg-obsidian-900 rounded-lg p-3 border border-obsidian-700/70">
-              <p className="text-xs font-body text-white/40 mb-1">This month IOU increase</p>
-              <p className={`text-base font-mono font-semibold ${currentMonthIouIncrease >= 0 ? "text-coral" : "text-volt"}`}>
-                {currentMonthIouIncrease >= 0 ? "+" : "-"}{formatCurrency(Math.abs(currentMonthIouIncrease))}
+              <p className="text-xs font-body text-white/40 mb-1">This month IOU net change</p>
+              <p className={`text-base font-mono font-semibold ${currentMonthNetIouChange >= 0 ? "text-coral" : "text-volt"}`}>
+                {currentMonthNetIouChange >= 0 ? "+" : "-"}{formatCurrency(Math.abs(currentMonthNetIouChange))}
               </p>
             </div>
             <div className="bg-obsidian-900 rounded-lg p-3 border border-obsidian-700/70">
@@ -545,6 +739,11 @@ export default function PeoplePage() {
                 {estimatedMonthlyIouIncrease >= 0 ? "+" : "-"}{formatCurrency(Math.abs(estimatedMonthlyIouIncrease))}
               </p>
               <p className="text-[11px] text-white/35 font-body mt-1">Based on the recent 3-month trend.</p>
+            </div>
+            <div className="bg-obsidian-900 rounded-lg p-3 border border-obsidian-700/70">
+              <p className="text-xs font-body text-white/40 mb-1">Auto repayments applied</p>
+              <p className="text-base font-mono font-semibold text-volt">-{formatCurrency(autoRepaymentsAppliedToDate)}</p>
+              <p className="text-[11px] text-white/35 font-body mt-1">Applied monthly from the configured start date.</p>
             </div>
             <div className="bg-obsidian-900 rounded-lg p-3 border border-volt/30">
               <p className="text-xs font-body text-white/40 mb-1">
@@ -572,6 +771,36 @@ export default function PeoplePage() {
             </div>
 
             <div className="rounded-lg border border-obsidian-700/70 bg-obsidian-900 p-3 flex flex-col gap-2">
+              <label className="flex items-center justify-between rounded-lg border border-obsidian-700/70 bg-obsidian-800 px-3 py-2">
+                <span className="text-xs font-body text-white/70">Enable auto monthly repayment</span>
+                <input
+                  type="checkbox"
+                  checked={debtConfig.autoRepaymentEnabled}
+                  onChange={(e) => {
+                    setDebtConfig((prev) => ({ ...prev, autoRepaymentEnabled: e.target.checked }));
+                    toast.success(e.target.checked ? "Auto repayment enabled" : "Auto repayment disabled");
+                  }}
+                  className="accent-volt"
+                />
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Input
+                  label="Auto repayment per month"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={autoRepaymentAmountInput}
+                  onChange={(e) => setAutoRepaymentAmountInput(e.target.value)}
+                />
+                <Input
+                  label="Auto repayment start date"
+                  type="date"
+                  value={autoRepaymentStartDateInput}
+                  onChange={(e) => setAutoRepaymentStartDateInput(e.target.value)}
+                />
+              </div>
+              <Button variant="secondary" size="sm" onClick={applyAutoRepayment}>Save Auto Repayment</Button>
               <Input
                 label="Record repayment"
                 type="number"
@@ -583,7 +812,7 @@ export default function PeoplePage() {
               />
               <Button variant="secondary" size="sm" onClick={applyRepayment}>Apply Repayment</Button>
               <p className="text-[11px] text-white/40 font-body">
-                Repayment lowers the starting debt baseline and is saved for this budget.
+                Manual repayment lowers starting debt once. Auto repayment applies monthly without manual entry.
               </p>
             </div>
           </div>
@@ -592,7 +821,7 @@ export default function PeoplePage() {
             <div>
               <p className="text-sm font-display font-semibold text-white">IOU Projection</p>
               <p className="text-xs text-white/40 font-body mt-0.5">
-                Estimate how much will be owed by a future date if this trend continues.
+                Estimate how much will be owed by a future date if this trend continues, net of auto repayments.
               </p>
             </div>
 
@@ -616,7 +845,7 @@ export default function PeoplePage() {
                 </p>
               </div>
               <div className="bg-obsidian-800 rounded-lg p-3 border border-obsidian-700/70">
-                <p className="text-xs font-body text-white/40 mb-1">Projected IOU change</p>
+                <p className="text-xs font-body text-white/40 mb-1">Projected IOU change (net)</p>
                 <p className={`text-base font-mono font-semibold ${projectedIouIncrease >= 0 ? "text-coral" : "text-volt"}`}>
                   {projectedIouIncrease >= 0 ? "+" : "-"}{formatCurrency(Math.abs(projectedIouIncrease))}
                 </p>
@@ -626,6 +855,9 @@ export default function PeoplePage() {
                 <p className="text-base font-mono font-semibold text-volt">{formatCurrency(projectedCumulativeIou)}</p>
               </div>
             </div>
+            <p className="text-[11px] text-white/35 font-body">
+              Auto repayments to target: -{formatCurrency(projectedAutoRepayments)}
+            </p>
           </div>
         </Card>
       )}
