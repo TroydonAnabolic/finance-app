@@ -180,15 +180,63 @@ export function EditTransactionModal({ open, onClose, transaction }: Props) {
       setRecurrenceInterval(recurring && recurrenceConfig?.interval ? String(recurrenceConfig.interval) : "1");
       setRecurrenceEndDate(recurring && recurrenceConfig?.endsOn ? recurrenceConfig.endsOn : "");
     } else if (!open) {
-      setIsRecurring(false);
-      setRecurrenceFrequency("monthly");
-      setRecurrenceInterval("1");
-      setRecurrenceEndDate("");
-      setPreserveDateOnly(false);
-      setEditScope("this");
-      setPaidByPersonId("");
-      setSplitType("personal");
-      setPayerAmounts({});
+      // Reset to the current transaction's values if available, else defaults
+      if (transaction) {
+        setType(transaction.type);
+        setAmount(String(transaction.amount));
+        setCategory(transaction.category);
+        setDescription(transaction.description);
+        setPreserveDateOnly(!transaction.date.includes("T"));
+        setDate(toDateTimeLocalInput(transaction.date));
+        setPersonId(transaction.personId);
+        setPaidByPersonId(transaction.paidByPersonId || transaction.personId);
+        setSplitType(transaction.splitType === "shared_equal" ? "shared_all_equal" : (transaction.splitType || "personal"));
+        if (transaction.paidByBreakdown?.length) {
+          const initialPayerAmounts: Record<string, string> = {};
+          transaction.paidByBreakdown.forEach((entry) => {
+            if (entry.personId) {
+              initialPayerAmounts[entry.personId] = String(entry.amount);
+            }
+          });
+          setPayerAmounts(initialPayerAmounts);
+        } else {
+          const fallbackPayerId = transaction.paidByPersonId || transaction.personId;
+          setPayerAmounts(fallbackPayerId ? { [fallbackPayerId]: String(transaction.amount) } : {});
+        }
+        const recurring =
+          !!transaction.isRecurring ||
+          !!transaction.recurrence ||
+          !!transaction.recurrenceGroupId ||
+          transaction.recurrenceStatus === "template" ||
+          transaction.recurrenceStatus === "occurrence" ||
+          !!transaction.recurrenceSourceId;
+        const recurrenceConfig = transaction.recurrence || seriesTemplate?.recurrence || null;
+        setIsRecurring(recurring);
+        setRecurrenceFrequency(recurring && recurrenceConfig?.frequency ? recurrenceConfig.frequency : "monthly");
+        setRecurrenceInterval(recurring && recurrenceConfig?.interval ? String(recurrenceConfig.interval) : "1");
+        setRecurrenceEndDate(recurring && recurrenceConfig?.endsOn ? recurrenceConfig.endsOn : "");
+        setEditScope("this");
+        setLoading(false);
+        setAutoSplitEqually(true);
+      } else {
+        setType("expense");
+        setAmount("");
+        setCategory("other");
+        setDescription("");
+        setPreserveDateOnly(false);
+        setDate("");
+        setPersonId("");
+        setPaidByPersonId("");
+        setSplitType("personal");
+        setPayerAmounts({});
+        setIsRecurring(false);
+        setRecurrenceFrequency("monthly");
+        setRecurrenceInterval("1");
+        setRecurrenceEndDate("");
+        setEditScope("this");
+        setLoading(false);
+        setAutoSplitEqually(true);
+      }
     }
   }, [open, transaction, seriesTemplate]);
 

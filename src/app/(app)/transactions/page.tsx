@@ -16,7 +16,7 @@ import toast from "react-hot-toast";
 
 type ColumnId = "dateTime" | "description" | "category" | "person" | "amount" | "recurrence" | "recurrenceGroup";
 
-type ViewMode = "completed" | "upcoming" | "all";
+type ViewMode = "completed" | "upcoming" | "all" | "templates";
 
 const COLUMN_CONFIG: { id: ColumnId; label: string }[] = [
   { id: "dateTime", label: "Date & Time" },
@@ -46,7 +46,7 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [catFilter, setCatFilter] = useState("all");
-  // Transaction view mode: completed, upcoming, all
+  // Transaction view mode: templates, completed, upcoming, all
   const [viewMode, setViewMode] = useState<ViewMode>("completed");
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
@@ -197,6 +197,10 @@ const [refreshing, setRefreshing] = useState(false);
     });
 
     const includeByMode = (t: Transaction) => {
+      if (viewMode === "templates") {
+        return isTemplate(t);
+      }
+
       if (viewMode === "completed") {
         return !isFuture(t);
       }
@@ -407,6 +411,7 @@ const [refreshing, setRefreshing] = useState(false);
           style={{ minWidth: 120 }}
         >
           <option value="completed">Completed</option>
+          <option value="templates">Templates</option>
           <option value="upcoming">Upcoming</option>
           <option value="all">All</option>
         </select>

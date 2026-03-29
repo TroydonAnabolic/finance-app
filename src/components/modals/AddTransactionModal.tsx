@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
@@ -48,6 +48,28 @@ export function AddTransactionModal({ open, onClose }: Props) {
   const [recurrenceEndDate, setRecurrenceEndDate] = useState("");
   const [loading, setLoading] = useState(false);
   const [autoSplitEqually, setAutoSplitEqually] = useState(true);
+
+  // Reset all fields to default when modal closes
+  // (open goes from true to false)
+  useEffect(() => {
+    if (!open) {
+      setType("expense");
+      setAmount("");
+      setCategory("other");
+      setDescription("");
+      setDate(format(new Date(), "yyyy-MM-dd"));
+      setPersonId("");
+      setPaidByPersonId("");
+      setSplitType("shared_all_equal");
+      setPayerAmounts({});
+      setIsRecurring(false);
+      setRecurrenceFrequency("monthly");
+      setRecurrenceInterval("1");
+      setRecurrenceEndDate("");
+      setLoading(false);
+      setAutoSplitEqually(true);
+    }
+  }, [open]);
 
   const budgetPeople = people.filter((p) => p.budgetId === activeBudget?.id);
   const parsedAmount = Number.parseFloat(amount);

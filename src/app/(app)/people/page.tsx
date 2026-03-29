@@ -27,6 +27,12 @@ type ContributionRow = {
   percentage: number;
 };
 
+function getMonthKey(value: Date): string {
+  const yyyy = value.getFullYear();
+  const mm = String(value.getMonth() + 1).padStart(2, "0");
+  return `${yyyy}-${mm}`;
+}
+
 function parseAmount(value: string): number {
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -141,6 +147,7 @@ export default function PeoplePage() {
   const [debtConfigHydrated, setDebtConfigHydrated] = useState(false);
   const [cashAssetBaseByPerson, setCashAssetBaseByPerson] = useState<Record<string, number>>({});
   const [cashAssetsHydrated, setCashAssetsHydrated] = useState(false);
+  const [projectionDateInput, setProjectionDateInput] = useState("");
 
   const budgetPeople = useMemo(() => {
     if (!activeBudget) return people;
@@ -236,6 +243,13 @@ export default function PeoplePage() {
     if (!cashAssetsHydrated) return;
     window.localStorage.setItem(cashAssetsStorageKey, JSON.stringify(cashAssetBaseByPerson));
   }, [cashAssetBaseByPerson, cashAssetsHydrated, cashAssetsStorageKey]);
+
+  useEffect(() => {
+    if (projectionDateInput) return;
+    const defaultTarget = new Date();
+    defaultTarget.setMonth(defaultTarget.getMonth() + 6);
+    setProjectionDateInput(defaultTarget.toISOString().slice(0, 10));
+  }, [projectionDateInput]);
 
   const expenseSharesByPerson = useMemo(() => {
     const memberIds = budgetPeople.map((p) => p.id);
@@ -333,8 +347,67 @@ export default function PeoplePage() {
     }, 0);
   }, [completedBudgetTransactions, debtConfig.debtorId, debtConfig.creditorId, budgetPeople]);
 
+  const debtDeltaByMonth = useMemo(() => {
+    const monthly: Record<string, number> = {};
+    if (!debtConfig.debtorId || !debtConfig.creditorId) return monthly;
+
+    const memberIds = budgetPeople.map((p) => p.id);
+    completedBudgetTransactions.forEach((tx) => {
+      if (tx.type !== "expense") return;
+
+      const txDate = parseDate(tx.date);
+      if (!txDate) return;
+
+      const shares = getExpenseShares(tx, memberIds);
+      const contributions = getPaymentContributions(tx);
+
+      const debtorShare = shares[debtConfig.debtorId] || 0;
+      const creditorShare = shares[debtConfig.creditorId] || 0;
+      const debtorContribution = contributions[debtConfig.debtorId] || 0;
+      const creditorContribution = contributions[debtConfig.creditorId] || 0;
+
+      const debtorOwesCreditorFromTx = Math.min(creditorContribution, debtorShare);
+      const creditorOwesDebtorFromTx = Math.min(debtorContribution, creditorShare);
+      const txDebtDelta = debtorOwesCreditorFromTx - creditorOwesDebtorFromTx;
+
+      const monthKey = getMonthKey(txDate);
+      monthly[monthKey] = (monthly[monthKey] || 0) + txDebtDelta;
+    });
+
+    return monthly;
+  }, [completedBudgetTransactions, debtConfig.debtorId, debtConfig.creditorId, budgetPeople]);
+
+  const currentMonthIouIncrease = useMemo(() => {
+    const key = getMonthKey(new Date());
+    return debtDeltaByMonth[key] || 0;
+  }, [debtDeltaByMonth]);
+
+  const estimatedMonthlyIouIncrease = useMemo(() => {
+    const now = new Date();
+    const recentMonthKeys = [0, 1, 2].map((offset) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+      return getMonthKey(d);
+    });
+    const totalRecent = recentMonthKeys.reduce((sum, key) => sum + (debtDeltaByMonth[key] || 0), 0);
+    return totalRecent / recentMonthKeys.length;
+  }, [debtDeltaByMonth]);
+
   const owedTotal = useMemo(() => debtConfig.openingDebt + debtDeltaFromTransactions, [debtConfig.openingDebt, debtDeltaFromTransactions]);
+  const cumulativeIou = useMemo(() => owedTotal, [owedTotal]);
   const equalizationGap = useMemo(() => creditorExpenses - debtorExpenses, [creditorExpenses, debtorExpenses]);
+
+  const projectionTargetDate = useMemo(() => parseDate(projectionDateInput), [projectionDateInput]);
+  const projectionMonthsAway = useMemo(() => {
+    if (!projectionTargetDate) return 0;
+    const now = new Date();
+    const targetEndOfDay = new Date(projectionTargetDate);
+    targetEndOfDay.setHours(23, 59, 59, 999);
+    const diffMs = targetEndOfDay.getTime() - now.getTime();
+    if (diffMs <= 0) return 0;
+    return diffMs / (1000 * 60 * 60 * 24 * 30.4375);
+  }, [projectionTargetDate]);
+  const projectedIouIncrease = useMemo(() => estimatedMonthlyIouIncrease * projectionMonthsAway, [estimatedMonthlyIouIncrease, projectionMonthsAway]);
+  const projectedCumulativeIou = useMemo(() => cumulativeIou + projectedIouIncrease, [cumulativeIou, projectedIouIncrease]);
 
   const debtPeopleOptions = budgetPeople.map((p) => ({ value: p.id, label: p.name }));
   const debtorPerson = budgetPeople.find((p) => p.id === debtConfig.debtorId) || null;
@@ -447,7 +520,7 @@ export default function PeoplePage() {
             <Button variant="secondary" size="sm" onClick={applyOpeningDebt}>Save Starting Debt</Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
             <div className="bg-obsidian-900 rounded-lg p-3 border border-obsidian-700/70">
               <p className="text-xs font-body text-white/40 mb-1">Starting debt</p>
               <p className="text-base font-mono font-semibold text-white">{formatCurrency(debtConfig.openingDebt)}</p>
@@ -460,11 +533,24 @@ export default function PeoplePage() {
                 {debtDeltaFromTransactions >= 0 ? "+" : "-"}{formatCurrency(Math.abs(debtDeltaFromTransactions))}
               </p>
             </div>
+            <div className="bg-obsidian-900 rounded-lg p-3 border border-obsidian-700/70">
+              <p className="text-xs font-body text-white/40 mb-1">This month IOU increase</p>
+              <p className={`text-base font-mono font-semibold ${currentMonthIouIncrease >= 0 ? "text-coral" : "text-volt"}`}>
+                {currentMonthIouIncrease >= 0 ? "+" : "-"}{formatCurrency(Math.abs(currentMonthIouIncrease))}
+              </p>
+            </div>
+            <div className="bg-obsidian-900 rounded-lg p-3 border border-obsidian-700/70">
+              <p className="text-xs font-body text-white/40 mb-1">Estimated monthly IOU increase</p>
+              <p className={`text-base font-mono font-semibold ${estimatedMonthlyIouIncrease >= 0 ? "text-coral" : "text-volt"}`}>
+                {estimatedMonthlyIouIncrease >= 0 ? "+" : "-"}{formatCurrency(Math.abs(estimatedMonthlyIouIncrease))}
+              </p>
+              <p className="text-[11px] text-white/35 font-body mt-1">Based on the recent 3-month trend.</p>
+            </div>
             <div className="bg-obsidian-900 rounded-lg p-3 border border-volt/30">
               <p className="text-xs font-body text-white/40 mb-1">
-                {debtorPerson?.name || "Debtor"} owes {creditorPerson?.name || "Creditor"} now
+                Cumulative IOU now ({debtorPerson?.name || "Debtor"} to {creditorPerson?.name || "Creditor"})
               </p>
-              <p className="text-base font-mono font-semibold text-volt">{formatCurrency(owedTotal)}</p>
+              <p className="text-base font-mono font-semibold text-volt">{formatCurrency(cumulativeIou)}</p>
             </div>
           </div>
 
@@ -499,6 +585,46 @@ export default function PeoplePage() {
               <p className="text-[11px] text-white/40 font-body">
                 Repayment lowers the starting debt baseline and is saved for this budget.
               </p>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-obsidian-700/70 bg-obsidian-900 p-3 flex flex-col gap-3">
+            <div>
+              <p className="text-sm font-display font-semibold text-white">IOU Projection</p>
+              <p className="text-xs text-white/40 font-body mt-0.5">
+                Estimate how much will be owed by a future date if this trend continues.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-3 items-end">
+              <Input
+                label="Project to date"
+                type="date"
+                value={projectionDateInput}
+                onChange={(e) => setProjectionDateInput(e.target.value)}
+              />
+              <p className="text-xs text-white/45 font-body">
+                Uses estimated monthly IOU increase from recent months and extends it to your target date.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="bg-obsidian-800 rounded-lg p-3 border border-obsidian-700/70">
+                <p className="text-xs font-body text-white/40 mb-1">Months to target</p>
+                <p className="text-base font-mono font-semibold text-white">
+                  {projectionTargetDate ? projectionMonthsAway.toFixed(1) : "-"}
+                </p>
+              </div>
+              <div className="bg-obsidian-800 rounded-lg p-3 border border-obsidian-700/70">
+                <p className="text-xs font-body text-white/40 mb-1">Projected IOU change</p>
+                <p className={`text-base font-mono font-semibold ${projectedIouIncrease >= 0 ? "text-coral" : "text-volt"}`}>
+                  {projectedIouIncrease >= 0 ? "+" : "-"}{formatCurrency(Math.abs(projectedIouIncrease))}
+                </p>
+              </div>
+              <div className="bg-obsidian-800 rounded-lg p-3 border border-volt/30">
+                <p className="text-xs font-body text-white/40 mb-1">Projected cumulative IOU</p>
+                <p className="text-base font-mono font-semibold text-volt">{formatCurrency(projectedCumulativeIou)}</p>
+              </div>
             </div>
           </div>
         </Card>
