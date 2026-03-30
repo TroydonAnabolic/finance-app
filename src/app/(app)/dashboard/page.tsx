@@ -23,6 +23,11 @@ export default function DashboardPage() {
   const [addOpen, setAddOpen] = useState(false);
 
   const parseDate = (value: string): Date | null => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [year, month, day] = value.split("-").map((part) => Number(part));
+      const parsedLocal = new Date(year, month - 1, day);
+      return Number.isNaN(parsedLocal.getTime()) ? null : parsedLocal;
+    }
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   };
@@ -36,10 +41,13 @@ export default function DashboardPage() {
     [people, activeBudget]
   );
 
-  const completedBudgetTransactions = useMemo(() => {
+  const postedBudgetTransactions = useMemo(() => {
     const now = new Date();
+    const isTemplate = (recurrenceStatus?: "one_time" | "template" | "occurrence", isRecurring?: boolean) =>
+      recurrenceStatus === "template" || !!isRecurring;
+
     return budgetTransactions.filter((t) => {
-      if (t.recurrenceStatus === "template" || !!t.isRecurring) return false;
+      if (isTemplate(t.recurrenceStatus, t.isRecurring)) return false;
       const dt = parseDate(t.date);
       if (!dt) return true;
       return dt.getTime() <= now.getTime();
@@ -47,17 +55,17 @@ export default function DashboardPage() {
   }, [budgetTransactions]);
 
   const summary = useMemo(() => {
-    if (period === "weekly") return getWeeklySummary(completedBudgetTransactions);
-    if (period === "fortnightly") return getFortnightlySummary(completedBudgetTransactions);
-    if (period === "monthly") return getMonthlySummary(completedBudgetTransactions);
-    return getYearlySummary(completedBudgetTransactions);
-  }, [completedBudgetTransactions, period]);
+    if (period === "weekly") return getWeeklySummary(postedBudgetTransactions);
+    if (period === "fortnightly") return getFortnightlySummary(postedBudgetTransactions);
+    if (period === "monthly") return getMonthlySummary(postedBudgetTransactions);
+    return getYearlySummary(postedBudgetTransactions);
+  }, [postedBudgetTransactions, period]);
 
-  const categoryData = useMemo(() => getCategoryBreakdown(completedBudgetTransactions), [completedBudgetTransactions]);
-  const monthlyData = useMemo(() => getMonthlyTrends(completedBudgetTransactions), [completedBudgetTransactions]);
+  const categoryData = useMemo(() => getCategoryBreakdown(postedBudgetTransactions), [postedBudgetTransactions]);
+  const monthlyData = useMemo(() => getMonthlyTrends(postedBudgetTransactions), [postedBudgetTransactions]);
   const contributions = useMemo(
-    () => getPersonContributions(completedBudgetTransactions, budgetPeople),
-    [completedBudgetTransactions, budgetPeople],
+    () => getPersonContributions(postedBudgetTransactions, budgetPeople),
+    [postedBudgetTransactions, budgetPeople],
   );
 
   return (
@@ -69,7 +77,7 @@ export default function DashboardPage() {
             {activeBudget?.name || "Overview"}
           </h1>
           <p className="text-white/40 font-body text-sm mt-0.5">
-            {loading ? "Loading..." : `${completedBudgetTransactions.length} completed transactions · ${budgetPeople.length} people`}
+            {loading ? "Loading..." : `${postedBudgetTransactions.length} posted transactions · ${budgetPeople.length} people`}
           </p>
         </div>
         <Button onClick={() => setAddOpen(true)} size="sm">

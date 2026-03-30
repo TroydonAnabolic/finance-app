@@ -5,10 +5,8 @@ import { AddTransactionModal } from "@/components/modals/AddTransactionModal";
 import { EditTransactionModal } from "@/components/modals/EditTransactionModal";
 import { ImportCSVModal } from "@/components/modals/ImportCSVModal";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { Select } from "@/components/ui/Select";
 import { Badge } from "@/components/ui/Badge";
-import { CATEGORY_COLORS, formatCurrency, formatDate, formatDateTime } from "@/lib/utils";
+import { CATEGORY_COLORS, formatCurrency, formatDateTime } from "@/lib/utils";
 import { exportTransactionsToCSV } from "@/lib/csv";
 import { Plus, Upload, Download, Search, Pencil, Trash2, RefreshCw } from "lucide-react";
 import type { Transaction } from "@/types";
@@ -17,6 +15,8 @@ import toast from "react-hot-toast";
 type ColumnId = "dateTime" | "description" | "category" | "person" | "amount" | "recurrence" | "recurrenceGroup";
 
 type ViewMode = "completed" | "upcoming" | "all" | "templates";
+type DateFilterMode = "preset" | "range";
+type PresetWindowDays = "30" | "60" | "90";
 
 const COLUMN_CONFIG: { id: ColumnId; label: string }[] = [
   { id: "dateTime", label: "Date & Time" },
@@ -38,6 +38,13 @@ const DEFAULT_VISIBLE_COLUMNS: Record<ColumnId, boolean> = {
   recurrenceGroup: false,
 };
 
+function toDateInputValue(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export default function TransactionsPage() {
   const { transactions, people, budgets, activeBudget, removeTransaction, refresh } = useApp();
   const [addOpen, setAddOpen] = useState(false);
@@ -46,11 +53,19 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [catFilter, setCatFilter] = useState("all");
+  const [dateFilterMode, setDateFilterMode] = useState<DateFilterMode>("preset");
+  const [presetWindowDays, setPresetWindowDays] = useState<PresetWindowDays>("30");
+  const [rangeStart, setRangeStart] = useState(() => {
+    const initial = new Date();
+    initial.setDate(initial.getDate() - 29);
+    return toDateInputValue(initial);
+  });
+  const [rangeEnd, setRangeEnd] = useState(() => toDateInputValue(new Date()));
   // Transaction view mode: templates, completed, upcoming, all
   const [viewMode, setViewMode] = useState<ViewMode>("completed");
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
-const [refreshing, setRefreshing] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const budgetTx = useMemo(() =>
     activeBudget ? transactions.filter((t) => t.budgetId === activeBudget.id) : [],
@@ -59,6 +74,11 @@ const [refreshing, setRefreshing] = useState(false);
 
   function parseTxDate(value: string): Date | null {
     if (!value) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [year, month, day] = value.split("-").map((part) => Number(part));
+      const parsedLocal = new Date(year, month - 1, day);
+      return Number.isNaN(parsedLocal.getTime()) ? null : parsedLocal;
+    }
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
@@ -105,9 +125,35 @@ const [refreshing, setRefreshing] = useState(false);
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
+    const presetStartDate = new Date(startOfToday);
+    presetStartDate.setDate(presetStartDate.getDate() - (Number(presetWindowDays) - 1));
+
+    const customRangeStart = rangeStart ? parseTxDate(rangeStart) : null;
+    const customRangeEnd = rangeEnd ? parseTxDate(rangeEnd) : null;
+    const customRangeStartBoundary = customRangeStart
+      ? new Date(customRangeStart.getFullYear(), customRangeStart.getMonth(), customRangeStart.getDate())
+      : null;
+    const customRangeEndBoundary = customRangeEnd
+      ? new Date(customRangeEnd.getFullYear(), customRangeEnd.getMonth(), customRangeEnd.getDate(), 23, 59, 59, 999)
+      : null;
+
+    const inSelectedDateRange = (t: Transaction) => {
+      const txDate = parseTxDate(t.date);
+      if (!txDate) return true;
+
+      if (dateFilterMode === "preset") {
+        return txDate.getTime() >= presetStartDate.getTime() && txDate.getTime() <= now.getTime();
+      }
+
+      if (customRangeStartBoundary && txDate.getTime() < customRangeStartBoundary.getTime()) return false;
+      if (customRangeEndBoundary && txDate.getTime() > customRangeEndBoundary.getTime()) return false;
+      return true;
+    };
+
     const matchesFilters = (t: Transaction) => {
       if (typeFilter !== "all" && t.type !== typeFilter) return false;
       if (catFilter !== "all" && t.category !== catFilter) return false;
+      if (!inSelectedDateRange(t)) return false;
       if (
         search &&
         !t.description.toLowerCase().includes(search.toLowerCase()) &&
@@ -234,7 +280,27 @@ const [refreshing, setRefreshing] = useState(false);
     return (viewMode === "upcoming" || viewMode === "all")
       ? [...fromStored, ...syntheticUpcoming]
       : fromStored;
-  }, [budgetTx, typeFilter, catFilter, search, viewMode]);
+  }, [budgetTx, typeFilter, catFilter, search, viewMode, dateFilterMode, presetWindowDays, rangeStart, rangeEnd]);
+
+  const visibleStoredTransactions = useMemo(
+    () => filtered.filter((t) => !t.id.startsWith("synthetic-next-")),
+    [filtered],
+  );
+
+  const visibleTotals = useMemo(() => {
+    const income = visibleStoredTransactions
+      .filter((t) => t.type === "income")
+      .reduce((sum, t) => sum + t.amount, 0);
+    const expenses = visibleStoredTransactions
+      .filter((t) => t.type === "expense")
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    return {
+      income,
+      expenses,
+      net: income - expenses,
+    };
+  }, [visibleStoredTransactions]);
 
   // Selection state (must be after filtered)
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -333,13 +399,17 @@ const [refreshing, setRefreshing] = useState(false);
 
   const isSyntheticUpcoming = (t: Transaction) => t.id.startsWith("synthetic-next-");
 
+  const dateFilterLabel = dateFilterMode === "preset"
+    ? `Last ${presetWindowDays} days`
+    : `${rangeStart || "Any"} to ${rangeEnd || "Any"}`;
+
   return (
     <div className="p-6 lg:p-8 flex flex-col gap-6">
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="font-display font-black text-2xl text-white">Transactions</h1>
-          <p className="text-white/40 font-body text-sm mt-0.5">{filtered.length} records</p>
+          <p className="text-white/40 font-body text-sm mt-0.5">{filtered.length} records · {dateFilterLabel}</p>
         </div>
         <div className="flex gap-2 flex-wrap">
           <div className="relative" ref={columnMenuRef}>
@@ -399,6 +469,61 @@ const [refreshing, setRefreshing] = useState(false);
           <option value="all">All categories</option>
           {categories.map((c) => <option key={c} value={c} className="capitalize">{c}</option>)}
         </select>
+        <select
+          value={dateFilterMode}
+          onChange={(e) => setDateFilterMode(e.target.value as DateFilterMode)}
+          className="bg-obsidian-800 border border-obsidian-600 text-white/70 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60 cursor-pointer"
+        >
+          <option value="preset">Last N days</option>
+          <option value="range">Date range</option>
+        </select>
+        {dateFilterMode === "preset" ? (
+          <select
+            value={presetWindowDays}
+            onChange={(e) => setPresetWindowDays(e.target.value as PresetWindowDays)}
+            className="bg-obsidian-800 border border-obsidian-600 text-white/70 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60 cursor-pointer"
+          >
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+          </select>
+        ) : (
+          <>
+            <input
+              type="date"
+              value={rangeStart}
+              onChange={(e) => setRangeStart(e.target.value)}
+              className="bg-obsidian-800 border border-obsidian-600 text-white/70 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60"
+              aria-label="Start date"
+            />
+            <input
+              type="date"
+              value={rangeEnd}
+              onChange={(e) => setRangeEnd(e.target.value)}
+              className="bg-obsidian-800 border border-obsidian-600 text-white/70 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60"
+              aria-label="End date"
+            />
+          </>
+        )}
+      </div>
+
+      {/* Visible totals */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-obsidian-800/60 border border-obsidian-600/50 rounded-xl px-4 py-3">
+          <p className="text-xs font-display font-semibold text-white/40 uppercase tracking-wider">Income</p>
+          <p className="text-lg font-mono font-semibold text-volt mt-1">+{formatCurrency(visibleTotals.income)}</p>
+        </div>
+        <div className="bg-obsidian-800/60 border border-obsidian-600/50 rounded-xl px-4 py-3">
+          <p className="text-xs font-display font-semibold text-white/40 uppercase tracking-wider">Expenses</p>
+          <p className="text-lg font-mono font-semibold text-coral mt-1">-{formatCurrency(visibleTotals.expenses)}</p>
+        </div>
+        <div className="bg-obsidian-800/60 border border-obsidian-600/50 rounded-xl px-4 py-3">
+          <p className="text-xs font-display font-semibold text-white/40 uppercase tracking-wider">Net</p>
+          <p className={`text-lg font-mono font-semibold mt-1 ${visibleTotals.net >= 0 ? "text-volt" : "text-coral"}`}>
+            {visibleTotals.net >= 0 ? "+" : ""}
+            {formatCurrency(visibleTotals.net)}
+          </p>
+        </div>
       </div>
 
       {/* View mode, Refresh and Delete Selected buttons */}
