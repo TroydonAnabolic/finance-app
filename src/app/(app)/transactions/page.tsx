@@ -125,8 +125,11 @@ export default function TransactionsPage() {
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    const presetStartDate = new Date(startOfToday);
-    presetStartDate.setDate(presetStartDate.getDate() - (Number(presetWindowDays) - 1));
+    const presetPastStartDate = new Date(startOfToday);
+    presetPastStartDate.setDate(presetPastStartDate.getDate() - (Number(presetWindowDays) - 1));
+    const presetFutureEndDate = new Date(startOfToday);
+    presetFutureEndDate.setDate(presetFutureEndDate.getDate() + (Number(presetWindowDays) - 1));
+    presetFutureEndDate.setHours(23, 59, 59, 999);
 
     const customRangeStart = rangeStart ? parseTxDate(rangeStart) : null;
     const customRangeEnd = rangeEnd ? parseTxDate(rangeEnd) : null;
@@ -142,7 +145,15 @@ export default function TransactionsPage() {
       if (!txDate) return true;
 
       if (dateFilterMode === "preset") {
-        return txDate.getTime() >= presetStartDate.getTime() && txDate.getTime() <= now.getTime();
+        if (viewMode === "upcoming") {
+          return txDate.getTime() >= startOfToday.getTime() && txDate.getTime() <= presetFutureEndDate.getTime();
+        }
+
+        if (viewMode === "all") {
+          return txDate.getTime() >= presetPastStartDate.getTime() && txDate.getTime() <= presetFutureEndDate.getTime();
+        }
+
+        return txDate.getTime() >= presetPastStartDate.getTime() && txDate.getTime() <= now.getTime();
       }
 
       if (customRangeStartBoundary && txDate.getTime() < customRangeStartBoundary.getTime()) return false;
@@ -400,7 +411,11 @@ export default function TransactionsPage() {
   const isSyntheticUpcoming = (t: Transaction) => t.id.startsWith("synthetic-next-");
 
   const dateFilterLabel = dateFilterMode === "preset"
-    ? `Last ${presetWindowDays} days`
+    ? viewMode === "upcoming"
+      ? `Next ${presetWindowDays} days`
+      : viewMode === "all"
+        ? `${presetWindowDays} days before/after today`
+        : `Last ${presetWindowDays} days`
     : `${rangeStart || "Any"} to ${rangeEnd || "Any"}`;
 
   return (
