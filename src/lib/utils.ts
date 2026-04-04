@@ -1,6 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { format, startOfWeek, endOfWeek, startOfMonth, endOfMonth, subWeeks, subMonths, subYears, isWithinInterval, parseISO } from "date-fns";
+import { format, startOfDay, endOfDay, startOfMonth, endOfMonth, subDays, subWeeks, subMonths, subYears, isWithinInterval, parseISO } from "date-fns";
 import type { Transaction, PeriodSummary, CategoryData, MonthlyData, PersonContribution, Person } from "@/types";
 
 export function cn(...inputs: ClassValue[]) {
@@ -40,22 +40,22 @@ export function getPeriodSummary(transactions: Transaction[], start: Date, end: 
 
 export function getWeeklySummary(transactions: Transaction[]): PeriodSummary {
   const now = new Date();
-  return getPeriodSummary(transactions, startOfWeek(now, { weekStartsOn: 1 }), endOfWeek(now, { weekStartsOn: 1 }));
+  return getPeriodSummary(transactions, startOfDay(subDays(now, 6)), endOfDay(now));
 }
 
 export function getFortnightlySummary(transactions: Transaction[]): PeriodSummary {
   const now = new Date();
-  return getPeriodSummary(transactions, subWeeks(now, 2), now);
+  return getPeriodSummary(transactions, startOfDay(subDays(now, 13)), endOfDay(now));
 }
 
 export function getMonthlySummary(transactions: Transaction[]): PeriodSummary {
   const now = new Date();
-  return getPeriodSummary(transactions, startOfMonth(now), endOfMonth(now));
+  return getPeriodSummary(transactions, startOfDay(subDays(now, 29)), endOfDay(now));
 }
 
 export function getYearlySummary(transactions: Transaction[]): PeriodSummary {
   const now = new Date();
-  return getPeriodSummary(transactions, subYears(now, 1), now);
+  return getPeriodSummary(transactions, startOfDay(subYears(now, 1)), endOfDay(now));
 }
 
 export const CATEGORY_COLORS: Record<string, string> = {
