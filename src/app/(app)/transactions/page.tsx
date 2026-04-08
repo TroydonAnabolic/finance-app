@@ -1,6 +1,7 @@
 "use client";
 import { useMemo, useState, useRef, useEffect } from "react";
 import { useApp } from "@/context/AppContext";
+import { useAuth } from "@/context/AuthContext";
 import { AddTransactionModal } from "@/components/modals/AddTransactionModal";
 import { EditTransactionModal } from "@/components/modals/EditTransactionModal";
 import { ImportCSVModal } from "@/components/modals/ImportCSVModal";
@@ -8,7 +9,7 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { CATEGORY_COLORS, formatCurrency, formatDateTime } from "@/lib/utils";
 import { exportTransactionsToCSV } from "@/lib/csv";
-import { Plus, Upload, Download, Search, Pencil, Trash2, RefreshCw } from "lucide-react";
+import { Plus, Upload, Download, Search, Pencil, Trash2, RefreshCw, SendHorizontal, Bot } from "lucide-react";
 import type { Transaction } from "@/types";
 import toast from "react-hot-toast";
 
@@ -17,6 +18,54 @@ type ColumnId = "dateTime" | "description" | "category" | "person" | "amount" | 
 type ViewMode = "completed" | "upcoming" | "all" | "templates";
 type DateFilterMode = "preset" | "range";
 type PresetWindowDays = "30" | "60" | "90";
+type ForecastConfidence = "low" | "medium" | "high";
+
+type ForecastTotals = {
+  income: number;
+  expenses: number;
+  net: number;
+};
+
+type SupportingNumber = {
+  label: string;
+  value: string | number;
+};
+
+type ForecastPrediction = {
+  horizonDays: number;
+  runRate: ForecastTotals;
+  knownScheduled: ForecastTotals & {
+    transactionCount: number;
+    syntheticOccurrences: number;
+  };
+  blended: ForecastTotals;
+  confidence: ForecastConfidence;
+  assumptions?: string[];
+  supportingNumbers?: SupportingNumber[];
+};
+
+type ForecastApiResponse = {
+  predictions: ForecastPrediction[];
+};
+
+type ChatApiResponse = {
+  answer: string;
+  assumptions: string[];
+  supportingNumbers: SupportingNumber[];
+  predictions: ForecastPrediction[];
+};
+
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  assumptions?: string[];
+  supportingNumbers?: SupportingNumber[];
+  predictions?: ForecastPrediction[];
+};
+
+const QUICK_FORECAST_HORIZONS = [30, 60, 90] as const;
+type QuickForecastHorizon = (typeof QUICK_FORECAST_HORIZONS)[number];
 
 const COLUMN_CONFIG: { id: ColumnId; label: string }[] = [
   { id: "dateTime", label: "Date & Time" },
@@ -46,6 +95,7 @@ function toDateInputValue(date: Date): string {
 }
 
 export default function TransactionsPage() {
+  const { user } = useAuth();
   const { transactions, people, budgets, activeBudget, removeTransaction, refresh } = useApp();
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -66,6 +116,17 @@ export default function TransactionsPage() {
   const [showColumnMenu, setShowColumnMenu] = useState(false);
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [quickForecastLoading, setQuickForecastLoading] = useState<QuickForecastHorizon | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: "assistant-welcome",
+      role: "assistant",
+      text: "Ask about trends or predictions for this budget. Example: Will I stay net positive over the next 60 days?",
+    },
+  ]);
+  const chatLogRef = useRef<HTMLDivElement>(null);
 
   const budgetTx = useMemo(() =>
     activeBudget ? transactions.filter((t) => t.budgetId === activeBudget.id) : [],
@@ -341,17 +402,23 @@ export default function TransactionsPage() {
       return next;
     });
   };
-    // Close columns menu on outside click
-    useEffect(() => {
-      if (!showColumnMenu) return;
-      function handleClick(e: MouseEvent) {
-        if (columnMenuRef.current && !columnMenuRef.current.contains(e.target as Node)) {
-          setShowColumnMenu(false);
-        }
+  // Close columns menu on outside click
+  useEffect(() => {
+    if (!showColumnMenu) return;
+    function handleClick(e: MouseEvent) {
+      if (columnMenuRef.current && !columnMenuRef.current.contains(e.target as Node)) {
+        setShowColumnMenu(false);
       }
-      document.addEventListener("mousedown", handleClick);
-      return () => document.removeEventListener("mousedown", handleClick);
-    }, [showColumnMenu]);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showColumnMenu]);
+
+  useEffect(() => {
+    if (!chatLogRef.current) return;
+    chatLogRef.current.scrollTop = chatLogRef.current.scrollHeight;
+  }, [chatMessages, chatLoading]);
+
   const [visibleColumns, setVisibleColumns] = useState<Record<ColumnId, boolean>>(DEFAULT_VISIBLE_COLUMNS);
 
   const personMap = useMemo(() => Object.fromEntries(people.map((p) => [p.id, p])), [people]);
@@ -409,6 +476,136 @@ export default function TransactionsPage() {
   };
 
   const isSyntheticUpcoming = (t: Transaction) => t.id.startsWith("synthetic-next-");
+
+  const formatSupportingValue = (item: SupportingNumber) => {
+    if (typeof item.value !== "number") return item.value;
+    if (/income|expense|net|amount|daily/i.test(item.label)) {
+      return formatCurrency(item.value);
+    }
+    return String(item.value);
+  };
+
+  const appendChatMessage = (message: Omit<ChatMessage, "id">) => {
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: `${message.role}-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+        ...message,
+      },
+    ]);
+  };
+
+  const getErrorMessage = async (response: Response) => {
+    try {
+      const payload = await response.json();
+      if (payload?.error && typeof payload.error === "string") return payload.error;
+      return `Request failed (${response.status})`;
+    } catch {
+      return `Request failed (${response.status})`;
+    }
+  };
+
+  const getBearerToken = async () => {
+    if (!user) throw new Error("You must be signed in to use AI chat.");
+    return user.getIdToken();
+  };
+
+  const requestQuickForecast = async (horizonDays: QuickForecastHorizon) => {
+    if (!activeBudget) {
+      toast.error("Select a budget to forecast.");
+      return;
+    }
+
+    setQuickForecastLoading(horizonDays);
+    try {
+      const token = await getBearerToken();
+      const response = await fetch(`/api/transactions/forecast?budgetId=${encodeURIComponent(activeBudget.id)}&days=${horizonDays}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response));
+      }
+
+      const payload = (await response.json()) as ForecastApiResponse;
+      const prediction = payload.predictions[0];
+      if (!prediction) {
+        throw new Error("No prediction returned from forecast endpoint.");
+      }
+
+      const netSign = prediction.blended.net >= 0 ? "+" : "";
+      appendChatMessage({
+        role: "assistant",
+        text: `Next ${horizonDays} days projection: income ${formatCurrency(prediction.blended.income)}, expenses ${formatCurrency(prediction.blended.expenses)}, net ${netSign}${formatCurrency(prediction.blended.net)}.`,
+        assumptions: prediction.assumptions,
+        supportingNumbers: prediction.supportingNumbers,
+        predictions: payload.predictions,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to load forecast";
+      toast.error(message);
+      appendChatMessage({
+        role: "assistant",
+        text: `I could not fetch the ${horizonDays}-day forecast. ${message}`,
+      });
+    } finally {
+      setQuickForecastLoading(null);
+    }
+  };
+
+  const submitChatQuestion = async () => {
+    const question = chatInput.trim();
+    if (!question) return;
+    if (!activeBudget) {
+      toast.error("Select a budget before asking a question.");
+      return;
+    }
+
+    appendChatMessage({ role: "user", text: question });
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const token = await getBearerToken();
+      const response = await fetch("/api/transactions/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          budgetId: activeBudget.id,
+          message: question,
+          preferredHorizonDays: Number(presetWindowDays),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response));
+      }
+
+      const payload = (await response.json()) as ChatApiResponse;
+      appendChatMessage({
+        role: "assistant",
+        text: payload.answer,
+        assumptions: payload.assumptions,
+        supportingNumbers: payload.supportingNumbers,
+        predictions: payload.predictions,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to get AI response";
+      toast.error(message);
+      appendChatMessage({
+        role: "assistant",
+        text: `I could not process that question. ${message}`,
+      });
+    } finally {
+      setChatLoading(false);
+    }
+  };
 
   const dateFilterLabel = dateFilterMode === "preset"
     ? viewMode === "upcoming"
@@ -580,6 +777,128 @@ export default function TransactionsPage() {
         >
           <Trash2 size={13} className="mr-1" /> Delete
         </Button>
+      </div>
+
+      {/* AI chat panel */}
+      <div className="bg-obsidian-800/60 border border-obsidian-600/50 rounded-xl p-4 flex flex-col gap-3">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="font-display font-bold text-sm uppercase tracking-wider text-white flex items-center gap-2">
+              <Bot size={14} className="text-volt" /> Forecast Chat
+            </h2>
+            <p className="text-xs font-body text-white/45 mt-1">
+              Ask questions about trends and projected transactions for the active budget.
+            </p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {QUICK_FORECAST_HORIZONS.map((horizonDays) => (
+              <Button
+                key={horizonDays}
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => requestQuickForecast(horizonDays)}
+                disabled={chatLoading || quickForecastLoading !== null || !activeBudget}
+              >
+                {quickForecastLoading === horizonDays && <RefreshCw size={12} className="animate-spin" />}
+                Next {horizonDays}d
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        <div ref={chatLogRef} className="max-h-80 overflow-y-auto rounded-lg border border-obsidian-700 bg-obsidian-900/60 p-3 flex flex-col gap-3">
+          {chatMessages.map((message) => (
+            <div key={message.id} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-full md:max-w-[92%] rounded-xl border px-3 py-2 ${message.role === "user"
+                ? "border-volt/40 bg-volt/10"
+                : "border-obsidian-600 bg-obsidian-800/70"}`}>
+                <p className="text-[10px] uppercase tracking-wider text-white/40 mb-1 font-display">
+                  {message.role === "user" ? "You" : "Ledger AI"}
+                </p>
+                <p className="text-sm text-white/85 font-body whitespace-pre-wrap">{message.text}</p>
+
+                {message.predictions && message.predictions.length > 0 && message.role === "assistant" && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
+                    {message.predictions.map((prediction) => (
+                      <div key={`${message.id}-${prediction.horizonDays}`} className="rounded-lg border border-obsidian-600/70 bg-obsidian-900/60 px-2.5 py-2">
+                        <p className="text-[10px] uppercase tracking-wider text-white/35 font-display">
+                          {prediction.horizonDays} days · {prediction.confidence}
+                        </p>
+                        <p className={`text-sm font-mono font-semibold mt-1 ${prediction.blended.net >= 0 ? "text-volt" : "text-coral"}`}>
+                          {prediction.blended.net >= 0 ? "+" : ""}
+                          {formatCurrency(prediction.blended.net)}
+                        </p>
+                        <p className="text-[11px] text-white/50 mt-0.5 font-body">
+                          In {formatCurrency(prediction.blended.income)} · Out {formatCurrency(prediction.blended.expenses)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {message.assumptions && message.assumptions.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-[10px] uppercase tracking-wider text-white/40 font-display">Assumptions</p>
+                    <ul className="mt-1 flex flex-col gap-1">
+                      {message.assumptions.map((assumption, index) => (
+                        <li key={`${message.id}-assumption-${index}`} className="text-xs text-white/65 font-body">
+                          • {assumption}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {message.supportingNumbers && message.supportingNumbers.length > 0 && (
+                  <div className="mt-3">
+                    <p className="text-[10px] uppercase tracking-wider text-white/40 font-display">Key numbers</p>
+                    <div className="mt-1 grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                      {message.supportingNumbers.slice(0, 8).map((item, index) => (
+                        <div key={`${message.id}-support-${index}`} className="text-xs font-body text-white/60 flex items-center justify-between gap-2">
+                          <span>{item.label}</span>
+                          <span className="text-white/80 font-mono">{formatSupportingValue(item)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {chatLoading && (
+            <div className="flex justify-start">
+              <div className="rounded-xl border border-obsidian-600 bg-obsidian-800/70 px-3 py-2 text-sm text-white/70 flex items-center gap-2 font-body">
+                <RefreshCw size={12} className="animate-spin" /> Thinking through your data...
+              </div>
+            </div>
+          )}
+        </div>
+
+        <form
+          className="flex gap-2 flex-wrap"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            await submitChatQuestion();
+          }}
+        >
+          <input
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            placeholder="Ask about forecasts, trends, or category spend..."
+            className="flex-1 min-w-56 bg-obsidian-900 border border-obsidian-600 text-white placeholder-white/25 rounded-lg px-3 py-2 text-sm font-body outline-none focus:border-volt/60"
+            disabled={chatLoading || !activeBudget}
+          />
+          <Button
+            type="submit"
+            size="sm"
+            disabled={chatLoading || !activeBudget || chatInput.trim().length === 0}
+          >
+            {chatLoading ? <RefreshCw size={13} className="animate-spin" /> : <SendHorizontal size={13} />}
+            Ask
+          </Button>
+        </form>
       </div>
       
       {/* Table */}
